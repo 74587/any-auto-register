@@ -486,23 +486,11 @@ class CFWorkerMailbox(BaseMailbox):
         return f"{prefix}{suffix}"
 
     def get_email(self) -> MailboxAccount:
-        import requests
         self._ensure_api_configured()
         name = self._generate_local_part()
         payload = {"enablePrefix": True, "name": name}
         if self.domain:
             payload["domain"] = self.domain
-        r = requests.post(f"{self.api}/admin/new_address",
-            json=payload, headers=self._headers(),
-            proxies=self.proxy, timeout=15)
-        print(f"[CFWorker] new_address status={r.status_code} resp={r.text[:200]}")
-        data = self._read_json(r, "new_address")
-        if r.status_code >= 400:
-            raise RuntimeError(f"CF Worker 创建邮箱失败: HTTP {r.status_code}, body={str(data)[:200]}")
-        email = data.get("email", data.get("address", ""))
-        token = data.get("token", data.get("jwt", ""))
-        if not email:
-            raise RuntimeError(f"CF Worker 创建邮箱失败: 返回缺少 email/address, body={str(data)[:200]}")
         data = self._request_json("POST", "/admin/new_address", payload=payload, timeout=15)
         email = data.get("email", data.get("address", ""))
         token = data.get("token", data.get("jwt", ""))
@@ -513,14 +501,7 @@ class CFWorkerMailbox(BaseMailbox):
         return MailboxAccount(email=email, account_id=token)
 
     def _get_mails(self, email: str) -> list:
-        import requests
         self._ensure_api_configured()
-        r = requests.get(f"{self.api}/admin/mails",
-            params={"limit": 20, "offset": 0, "address": email},
-            headers=self._headers(), proxies=self.proxy, timeout=10)
-        data = self._read_json(r, "mails")
-        if r.status_code >= 400:
-            raise RuntimeError(f"CF Worker 拉取邮件失败: HTTP {r.status_code}, body={str(data)[:200]}")
         data = self._request_json(
             "GET",
             "/admin/mails",
