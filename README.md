@@ -74,6 +74,7 @@
 | Logo | 名称 | 介绍 | 官网 |
 | --- | --- | --- | --- |
 | <a href="https://faka.gsyun.cloud/" target="_blank"><img src="frontend/public/logo.png" alt="阿晨小铺" width="140" /></a> | 阿晨小铺 | 本人经营gpt等虚拟产品,诚信稳定，有保障 | [https://faka.gsyun.cloud/](https://faka.gsyun.cloud/) |
+| <a href="https://api.codelife.eu.cc/" target="_blank">zc-api</a> | zc-api | 面向 Claude Code、Codex 等模型调用场景的中转服务，10G 带宽保障首字响应更快、链路稳定。提供高可用接口、便捷接入与持续交付支持，适合开发者与团队长期使用；支持开具发票，详情可前往官网查看。 | [https://api.codelife.eu.cc/](https://api.codelife.eu.cc/) |
 
 ## 赞助商目录
 
@@ -81,10 +82,7 @@
 
 | Logo | 名称 | 介绍 | 官网 |
 | --- | --- | --- | --- |
-| <a href="https://bestproxy.com/?keyword=hv0mj0wa" target="_blank"><img src="frontend/public/bestproxy.jpg" alt="bestproxy" width="140" /></a> | bestproxy | 提供高纯度住宅IP，支持一号一IP独享，结合真实家庭网络与指纹隔离，可实现链路环境隔离，降低关联风控概率，适配批量注册与账号养护场景。<br><br>**折扣：10%**<br>**券码（送500M）：ZCTYUH90** | [https://bestproxy.com/?keyword=hv0mj0wa](https://bestproxy.com/?keyword=hv0mj0wa) |
-| <a href="https://pay.ldxp.cn/shop/plus7" target="_blank"><img src="frontend/public/zhz7.jpg" alt="plus7卡网" width="140" /></a> | plus7卡网 | 提供稳定、低价的 GPT Plus 开通与相关服务，适合有日常使用和持续订阅需求的用户。可前往官网查看最新方案与说明。 | [https://pay.ldxp.cn/shop/plus7](https://pay.ldxp.cn/shop/plus7) |
-| <a href="https://gzxsy.vip" target="_blank"><img src="frontend/public/gzxsylogo.jpg" alt="星思研中转站" width="140" /></a> | 星思研中转站 | 为 Claude Code、Codex 等模型调用场景提供稳定中转与配套服务，适合需要高可用接口、便捷接入和持续交付支持的开发者与团队。可前往官网了解最新方案。 | [https://gzxsy.vip](https://gzxsy.vip) |
-| <a href="https://ai.xiaoye.io/" target="_blank"><img src="frontend/public/xiaoyelogo.jpg" alt="小野API中转站" width="140" /></a> | 小野API中转站 | 为 Claude Code、Codex 等模型调用场景提供稳定中转与配套服务，适合需要高可用接口、便捷接入和持续交付支持的开发者与团队。可前往官网了解最新方案。 | [https://ai.xiaoye.io/](https://ai.xiaoye.io/) |
+| <a href="https://www.rapidproxy.io/?code=IFZZROPF1" target="_blank"><img src="frontend/public/RapidProxy.png" alt="RapidProxy" width="140" /></a> | RapidProxy | RapidProxy 为自动化注册与账号管理场景提供稳定的代理支持。<br><br>RapidProxy 提供全球住宅 IP 网络，支持智能轮换、稳定 Session 和高并发请求，帮助开发者更高效地完成批量任务，优化自动化执行环境。<br><br>动态住宅代理低至 $0.55/GB，流量长期有效不过期。<br><br>**适用场景：**<br>自动化注册 / 浏览器自动化（Playwright、Selenium）/ 多账号环境管理 / 数据采集任务<br><br>注册可送 500MB 免费测试，邀请好友即可赚取高达 15% 的佣金！<br><br>**专属优惠码：RAPID10（优惠 10%）** | [https://www.rapidproxy.io/?code=IFZZROPF1](https://www.rapidproxy.io/?code=IFZZROPF1) |
 
 ## 界面预览
 

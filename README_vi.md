@@ -66,6 +66,7 @@ Cảm ơn những sản phẩm tự vận hành đã hỗ trợ any-auto-registe
 | Logo | Tên | Giới thiệu | Website |
 | --- | --- | --- | --- |
 | <a href="https://faka.gsyun.cloud/" target="_blank"><img src="frontend/public/logo.png" alt="阿晨小铺" width="140" /></a> | 阿晨小铺 | 本人经营,诚信稳定 | [https://faka.gsyun.cloud/](https://faka.gsyun.cloud/) |
+| <a href="https://api.codelife.eu.cc/" target="_blank">zc-api</a> | zc-api | Dịch vụ trung chuyển cho các tình huống gọi mô hình như Claude Code và Codex. Băng thông 10Gbps đảm bảo phản hồi token đầu tiên nhanh hơn và kết nối ổn định. Cung cấp giao diện tin cậy cao, tích hợp dễ dàng và hỗ trợ giao hàng liên tục, phù hợp cho nhà phát triển và nhóm sử dụng lâu dài. Có hỗ trợ hóa đơn; truy cập trang chính thức để biết chi tiết. | [https://api.codelife.eu.cc/](https://api.codelife.eu.cc/) |
 
 ## Danh sách nhà tài trợ
 
@@ -73,10 +74,7 @@ Cảm ơn những người bạn và đối tác đã hỗ trợ any-auto-regist
 
 | Logo | Tên | Giới thiệu | Website |
 | --- | --- | --- | --- |
-| <a href="https://bestproxy.com/?keyword=hv0mj0wa" target="_blank"><img src="frontend/public/bestproxy.jpg" alt="bestproxy" width="140" /></a> | bestproxy | 提供高纯度住宅IP，支持一号一IP独享，结合真实家庭网络与指纹隔离，可实现链路环境隔离，降低关联风控概率，适配批量注册与账号养护场景。<br><br>**折扣：10%**<br>**券码（送500M）：ZCTYUH90** | [https://bestproxy.com/?keyword=hv0mj0wa](https://bestproxy.com/?keyword=hv0mj0wa) |
-| <a href="https://pay.ldxp.cn/shop/plus7" target="_blank"><img src="frontend/public/zhz7.jpg" alt="plus7卡网" width="140" /></a> | plus7卡网 | Cung cấp dịch vụ GPT Plus ổn định với chi phí hợp lý, phù hợp cho người dùng cần sử dụng hằng ngày và gia hạn lâu dài. Truy cập website để xem các gói và thông tin mới nhất. | [https://pay.ldxp.cn/shop/plus7](https://pay.ldxp.cn/shop/plus7) |
-| <a href="https://gzxsy.vip" target="_blank"><img src="frontend/public/gzxsylogo.jpg" alt="星思研中转站" width="140" /></a> | 星思研中转站 | Cung cấp dịch vụ trung chuyển ổn định cho các tình huống gọi mô hình như Claude Code, Codex, phù hợp với nhà phát triển và nhóm cần giao diện tin cậy cao, tích hợp thuận tiện và hỗ trợ giao hàng liên tục. | [https://gzxsy.vip](https://gzxsy.vip) |
-| <a href="https://ai.xiaoye.io/" target="_blank"><img src="frontend/public/xiaoyelogo.jpg" alt="小野API中转站" width="140" /></a> | 小野API中转站 | Cung cấp dịch vụ trung chuyển ổn định cho các tình huống gọi mô hình như Claude Code, Codex, phù hợp với nhà phát triển và nhóm cần giao diện tin cậy cao, tích hợp thuận tiện và hỗ trợ giao hàng liên tục. | [https://ai.xiaoye.io/](https://ai.xiaoye.io/) |
+| <a href="https://www.rapidproxy.io/?code=IFZZROPF1" target="_blank"><img src="frontend/public/RapidProxy.png" alt="RapidProxy" width="140" /></a> | RapidProxy | RapidProxy cung cấp hỗ trợ proxy ổn định cho các tình huống đăng ký tự động và quản lý tài khoản.<br><br>RapidProxy cung cấp mạng IP dân cư toàn cầu, hỗ trợ xoay vòng thông minh, phiên ổn định và yêu cầu đồng thời cao, giúp nhà phát triển hoàn thành tác vụ hàng loạt hiệu quả hơn và tối ưu môi trường thực thi tự động.<br><br>Proxy dân cư động chỉ từ $0.55/GB, lưu lượng có hiệu lực dài hạn không hết hạn.<br><br>**Tình huống sử dụng:**<br>Đăng ký tự động / Tự động hóa trình duyệt (Playwright, Selenium) / Quản lý môi trường nhiều tài khoản / Tác vụ thu thập dữ liệu<br><br>Đăng ký để nhận 500MB dùng thử miễn phí; mời bạn bè để kiếm lên đến 15% hoa hồng!<br><br>**Mã giảm giá độc quyền: RAPID10 (giảm 10%)** | [https://www.rapidproxy.io/?code=IFZZROPF1](https://www.rapidproxy.io/?code=IFZZROPF1) |
 
 ## Xem trước giao diện
 

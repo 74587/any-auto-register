@@ -66,6 +66,7 @@ Thank you to the following self-operated products for supporting any-auto-regist
 | Logo | Name | Description | Website |
 | --- | --- | --- | --- |
 | <a href="https://faka.gsyun.cloud/" target="_blank"><img src="frontend/public/logo.png" alt="阿晨小铺" width="140" /></a> | 阿晨小铺 | 本人经营,诚信稳定 | [https://faka.gsyun.cloud/](https://faka.gsyun.cloud/) |
+| <a href="https://api.codelife.eu.cc/" target="_blank">zc-api</a> | zc-api | Relay service for model-calling scenarios such as Claude Code and Codex. 10Gbps bandwidth ensures faster first-token response and stable connectivity. Provides high-availability interfaces, easy integration, and continuous-delivery support, suitable for long-term use by developers and teams. Invoices supported; visit the official site for details. | [https://api.codelife.eu.cc/](https://api.codelife.eu.cc/) |
 
 ## Sponsors
 
@@ -73,10 +74,7 @@ Thank you to the following friends and partners for supporting any-auto-register
 
 | Logo | Name | Description | Website |
 | --- | --- | --- | --- |
-| <a href="https://bestproxy.com/?keyword=hv0mj0wa" target="_blank"><img src="frontend/public/bestproxy.jpg" alt="bestproxy" width="140" /></a> | bestproxy | 提供高纯度住宅IP，支持一号一IP独享，结合真实家庭网络与指纹隔离，可实现链路环境隔离，降低关联风控概率，适配批量注册与账号养护场景。<br><br>**折扣：10%**<br>**券码（送500M）：ZCTYUH90** | [https://bestproxy.com/?keyword=hv0mj0wa](https://bestproxy.com/?keyword=hv0mj0wa) |
-| <a href="https://pay.ldxp.cn/shop/plus7" target="_blank"><img src="frontend/public/zhz7.jpg" alt="plus7卡网" width="140" /></a> | plus7卡网 | Provides stable and affordable GPT Plus subscription services, suitable for users who need reliable daily access and ongoing renewals. Visit the website for the latest plans and details. | [https://pay.ldxp.cn/shop/plus7](https://pay.ldxp.cn/shop/plus7) |
-| <a href="https://gzxsy.vip" target="_blank"><img src="frontend/public/gzxsylogo.jpg" alt="星思研中转站" width="140" /></a> | 星思研中转站 | Provides stable relay services for model calling scenarios like Claude Code, Codex, etc., suitable for developers and teams needing high-availability interfaces, convenient integration, and continuous delivery support. | [https://gzxsy.vip](https://gzxsy.vip) |
-| <a href="https://ai.xiaoye.io/" target="_blank"><img src="frontend/public/xiaoyelogo.jpg" alt="小野API中转站" width="140" /></a> | 小野API中转站 | Provides stable relay services for model calling scenarios like Claude Code, Codex, etc., suitable for developers and teams needing high-availability interfaces, convenient integration, and continuous delivery support. | [https://ai.xiaoye.io/](https://ai.xiaoye.io/) |
+| <a href="https://www.rapidproxy.io/?code=IFZZROPF1" target="_blank"><img src="frontend/public/RapidProxy.png" alt="RapidProxy" width="140" /></a> | RapidProxy | RapidProxy provides stable proxy support for automated registration and account management scenarios.<br><br>RapidProxy offers a global residential IP network, supporting intelligent rotation, stable sessions, and high-concurrency requests, helping developers complete batch tasks more efficiently and optimize the automated execution environment.<br><br>Dynamic residential proxy starting from $0.55/GB, with traffic that remains valid long-term and never expires.<br><br>**Use cases:**<br>Automated registration / Browser automation (Playwright, Selenium) / Multi-account environment management / Data collection tasks<br><br>Register to get 500MB free trial; invite friends to earn up to 15% commission!<br><br>**Exclusive discount code: RAPID10 (10% off)** | [https://www.rapidproxy.io/?code=IFZZROPF1](https://www.rapidproxy.io/?code=IFZZROPF1) |
 
 ## UI Preview
 
