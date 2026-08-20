@@ -14,11 +14,6 @@ account_manager.db
 *.egg-info/
 dist/
 build/
-account_manager.db
 backend.stdout.log
 backend.stderr.log
-services/turnstile_solver/solver.log
-smstome_used/
-smstome_all_numbers.txt
-smstome_uk_deep_numbers.txt
 .env

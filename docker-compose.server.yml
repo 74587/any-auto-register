@@ -1,0 +1,27 @@
+# 无头服务器部署，配套 ./Dockerfile.server。
+#
+# 相对 docker-compose.yml 的差异：
+#   - 不映射 8317（CLIProxyAPI 插件端口），避免和宿主机上已有的 CLIProxyAPI 抢端口
+#   - 不开 Turnstile Solver，也就不需要 8889 和 shm_size
+#   - 端口默认只绑 127.0.0.1，由宿主机的反向代理决定要不要对外暴露
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: any-auto-register:server
+    container_name: any-auto-register
+    init: true
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8000"
+      APP_RELOAD: "0"
+      APP_RUNTIME_DIR: /runtime
+      APP_ENABLE_SOLVER: "0"
+      DATABASE_URL: sqlite:////runtime/account_manager.db
+    ports:
+      - "${APP_PORT_BIND:-127.0.0.1:8000}:8000"
+    volumes:
+      - ${APP_RUNTIME_BIND:-./data}:/runtime

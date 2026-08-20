@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1.7
+#
+# 无头服务器部署镜像。
+#
+# 与 ./Dockerfile 的区别只有一处：不装浏览器栈（Playwright 浏览器二进制、
+# Camoufox、Go 工具链、GTK/Xvfb），镜像因此从约 5GB 降到约 1.2GB。
+#
+# 之所以能砍掉，是因为剩下的两个平台都不碰浏览器：ChatGPT 注册已整体切到
+# platforms/chatgpt/protocol 的纯协议实现，iCloud 声明 supported_executors
+# = ["protocol"]。唯一用 Playwright 的 payment.open_url_incognito 是"在本机
+# 弹个付款页"的桌面便利功能，在无头服务器上本来就没有意义，缺浏览器时它会
+# 自行回退到系统浏览器分支。
+#
+# 需要 Turnstile Solver / 有头浏览器时请改用根目录的 ./Dockerfile。
+
+FROM node:20-bookworm-slim AS frontend-builder
+
+WORKDIR /app/frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HOST=0.0.0.0 \
+    PORT=8000 \
+    APP_RELOAD=0 \
+    APP_RUNTIME_DIR=/runtime \
+    APP_ENABLE_SOLVER=0
+
+WORKDIR /app
+
+COPY requirements.txt ./
+
+# nodejs 是运行时硬依赖，不是构建期依赖：ChatGPT 的 Sentinel PoW 求解器要起
+# node 子进程跑 OpenAI 的 sdk.js，缺它验证码邮件会被服务端静默丢弃。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --upgrade pip \
+    && pip install -r requirements.txt
+
+COPY . .
+COPY --from=frontend-builder /app/static /app/static
+
+RUN apt-get update && apt-get install -y --no-install-recommends dos2unix \
+    && dos2unix /app/docker/entrypoint.server.sh \
+    && chmod +x /app/docker/entrypoint.server.sh \
+    && mkdir -p /runtime /runtime/logs \
+    && apt-get purge -y dos2unix && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+EXPOSE 8000
+
+VOLUME ["/runtime"]
+
+ENTRYPOINT ["/app/docker/entrypoint.server.sh"]
