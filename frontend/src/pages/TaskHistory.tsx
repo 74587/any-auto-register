@@ -2,6 +2,11 @@ import { useCallback, useEffect, useState } from 'react'
 import { Card, Table, Select, Button, Tag, Space, Popconfirm, Typography, message } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { ReloadOutlined, DeleteOutlined } from '@ant-design/icons'
+import {
+  PLATFORM_FILTER_OPTIONS,
+  getPlatformColor,
+  getPlatformLabel,
+} from '@/lib/platforms'
 import { apiFetch } from '@/lib/utils'
 
 const { Text } = Typography
@@ -79,8 +84,8 @@ export default function TaskHistory() {
       title: '平台',
       dataIndex: 'platform',
       key: 'platform',
-      width: 100,
-      render: (text: string) => <Tag>{text}</Tag>,
+      width: 140,
+      render: (text: string) => <Tag color={getPlatformColor(text)}>{getPlatformLabel(text)}</Tag>,
     },
     {
       title: '邮箱',
@@ -136,12 +141,8 @@ export default function TaskHistory() {
               setPlatform(value)
               setSelectedRowKeys([])
             }}
-            style={{ width: 120 }}
-            options={[
-              { value: '', label: '全部平台' },
-              { value: 'chatgpt', label: 'ChatGPT' },
-              { value: 'cursor', label: 'Cursor' },
-            ]}
+            style={{ width: 160 }}
+            options={PLATFORM_FILTER_OPTIONS}
           />
           <Button icon={<ReloadOutlined spin={loading} />} onClick={load} loading={loading} />
         </Space>

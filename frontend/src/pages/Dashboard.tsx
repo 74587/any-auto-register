@@ -7,12 +7,8 @@ import {
   CloseCircleOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
+import { getPlatformColor, getPlatformLabel } from '@/lib/platforms'
 import { apiFetch } from '@/lib/utils'
-
-const PLATFORM_COLORS: Record<string, string> = {
-  chatgpt: '#3b82f6',
-  cursor: '#10b981',
-}
 
 const STATUS_COLORS: Record<string, string> = {
   registered: 'default',
@@ -103,12 +99,12 @@ export default function Dashboard() {
               Object.entries(stats.by_platform || {}).map(([platform, count]: any) => (
                 <div key={platform} style={{ marginBottom: 16 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <Tag color={PLATFORM_COLORS[platform] || 'default'}>{platform}</Tag>
+                    <Tag color={getPlatformColor(platform)}>{getPlatformLabel(platform)}</Tag>
                     <span>{count}</span>
                   </div>
                   <Progress
                     percent={stats.total ? Math.round((count / stats.total) * 100) : 0}
-                    strokeColor={PLATFORM_COLORS[platform] || '#6366f1'}
+                    strokeColor={getPlatformColor(platform)}
                     showInfo={false}
                   />
                 </div>

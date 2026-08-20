@@ -12,6 +12,7 @@ import {
   SyncOutlined,
   PlusOutlined,
   LockOutlined,
+  CloudOutlined,
 } from '@ant-design/icons'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
 import MailImportPanel from '@/components/settings/MailImportPanel'
@@ -337,41 +338,22 @@ const TAB_ITEMS = [
     ],
   },
   {
-    key: 'grok',
-    label: 'Grok',
-    icon: <ApiOutlined />,
+    key: 'icloud',
+    label: 'iCloud',
+    icon: <CloudOutlined />,
     sections: [
       {
-        title: 'grok2api',
-        desc: '注册成功后自动导入到 grok2api 管理后台',
-        fields: [
-          { key: 'grok2api_url', label: 'API URL', placeholder: 'http://127.0.0.1:7860' },
-          { key: 'grok2api_app_key', label: 'App Key', secret: true },
-          { key: 'grok2api_pool', label: 'Token Pool', placeholder: 'ssoBasic 或 ssoSuper' },
-          { key: 'grok2api_quota', label: 'Quota（可选）', placeholder: '留空按池默认值' },
-        ],
-      },
-    ],
-  },
-  {
-    key: 'kiro',
-    label: 'Kiro',
-    icon: <ApiOutlined />,
-    sections: [
-      {
-        title: 'Kiro Account Manager',
-        desc: '注册成功后自动写入 kiro-account-manager 的 accounts.json',
+        title: '隐私邮箱默认参数',
+        desc: 'iCloud 注册任务生成 Hide My Email 地址时使用的默认值',
         fields: [
           {
-            key: 'kiro_manager_path',
-            label: 'accounts.json 路径（可选）',
-            placeholder: '留空则自动使用系统默认路径',
+            key: 'icloud_account_email',
+            label: '默认主号 Apple ID',
+            placeholder: '留空则使用第一个已启用的主号',
           },
-          {
-            key: 'kiro_manager_exe',
-            label: 'Kiro Manager 可执行文件（可选）',
-            placeholder: '未安装 Rust 时可填写已安装的 KiroAccountManager.exe',
-          },
+          { key: 'icloud_region', label: '区域', placeholder: 'global 或 china' },
+          { key: 'icloud_alias_label', label: '别名标签', placeholder: 'any-auto-register' },
+          { key: 'icloud_alias_note', label: '别名备注', placeholder: '自动注册生成' },
         ],
       },
     ],
@@ -571,7 +553,7 @@ function ConfigField({ field }: { field: FieldConfig }) {
   const isBooleanField = field.type === 'boolean'
   const helpText =
     field.key === 'default_executor'
-      ? '仅对支持的平台生效；ChatGPT、Cursor、Grok、Kiro、Tavily 支持浏览器模式，OpenBlockLabs 仅支持纯协议。'
+      ? '仅对支持的平台生效；ChatGPT 支持浏览器模式，iCloud 仅支持纯协议。'
       : field.key === 'email_domain_rule_enabled'
       ? '仅 CF Worker 生效：开启后会校验域名级数，以及域名至少包含 2 个字母和 2 个数字。'
       : field.key === 'email_domain_level_count'
@@ -1054,20 +1036,12 @@ function IntegrationsPanel() {
               >
                 卸载
               </Button>
-              {item.name === 'grok2api' ? (
+              {item.name === 'cliproxyapi' ? (
                 <Button
-                  loading={busy === 'backfill-grok'}
-                  onClick={() => backfill(['grok'], 'Grok', 'backfill-grok')}
+                  loading={busy === 'backfill-chatgpt'}
+                  onClick={() => backfill(['chatgpt'], 'ChatGPT', 'backfill-chatgpt')}
                 >
-                  回填现有 Grok 账号
-                </Button>
-              ) : null}
-              {item.name === 'kiro-manager' ? (
-                <Button
-                  loading={busy === 'backfill-kiro'}
-                  onClick={() => backfill(['kiro'], 'Kiro', 'backfill-kiro')}
-                >
-                  回填现有 Kiro 账号
+                  回填现有 ChatGPT 账号
                 </Button>
               ) : null}
             </Space>
