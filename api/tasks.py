@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 MAX_FINISHED_TASKS = 200
 CLEANUP_THRESHOLD = 250
+# LuckMail 的项目编码与本项目平台标识不完全一致，需要显式映射。
+LUCKMAIL_PROJECT_CODES = {"chatgpt": "openai"}
 _task_store = RegisterTaskStore(
     max_finished_tasks=MAX_FINISHED_TASKS,
     cleanup_threshold=CLEANUP_THRESHOLD,
@@ -282,17 +284,9 @@ def _prepare_register_request(req: RegisterTaskRequest) -> RegisterTaskRequest:
         "mail_provider", ""
     )
     if mail_provider == "luckmail":
-        platform = prepared.platform
-        if platform in ("tavily", "openblocklabs"):
-            raise HTTPException(400, f"LuckMail 渠道暂时不支持 {platform} 项目注册")
-
-        mapping = {
-            "cursor": "cursor",
-            "grok": "grok",
-            "kiro": "kiro",
-            "chatgpt": "openai",
-        }
-        prepared.extra["luckmail_project_code"] = mapping.get(platform, platform)
+        prepared.extra["luckmail_project_code"] = LUCKMAIL_PROJECT_CODES.get(
+            prepared.platform, prepared.platform
+        )
 
     return prepared
 
