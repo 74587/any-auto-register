@@ -13,6 +13,7 @@ import {
   PlusOutlined,
   LockOutlined,
   CloudOutlined,
+  MobileOutlined,
 } from '@ant-design/icons'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
 import { ICLOUD_REGION_OPTIONS } from '@/lib/icloud'
@@ -78,7 +79,13 @@ const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
     { label: 'latest semver tag（推荐）', value: 'tag' },
     { label: '分支 HEAD', value: 'branch' },
   ],
+  sms_provider: [
+    { label: 'SmsBower', value: 'smsbower' },
+    { label: 'HeroSMS', value: 'herosms' },
+  ],
 }
+
+const SMS_BOOLEAN_KEYS = ['sms_enabled', 'sms_auto_country', 'sms_reuse_phone'] as const
 
 const TAB_ITEMS = [
   {
@@ -310,16 +317,49 @@ const TAB_ITEMS = [
           { key: 'codex_proxy_upload_type', label: '上传类型' },
         ],
       },
+    ],
+  },
+  {
+    key: 'sms',
+    label: '手机接码',
+    icon: <MobileOutlined />,
+    sections: [
       {
-        title: 'SMSToMe 手机验证',
-        desc: 'ChatGPT add_phone 阶段自动取号并轮询短信验证码',
+        title: '接码平台',
+        desc: 'ChatGPT 注册链路进入 add-phone 时自动租号、等短信、验证，全程无人值守',
         fields: [
-          { key: 'smstome_cookie', label: 'SMSToMe Cookie', secret: true },
-          { key: 'smstome_country_slugs', label: '国家列表', placeholder: 'united-kingdom,poland' },
-          { key: 'smstome_phone_attempts', label: '手机号尝试次数', placeholder: '3' },
-          { key: 'smstome_otp_timeout_seconds', label: '短信等待秒数', placeholder: '45' },
-          { key: 'smstome_poll_interval_seconds', label: '轮询间隔秒数', placeholder: '5' },
-          { key: 'smstome_sync_max_pages_per_country', label: '每国同步页数', placeholder: '5' },
+          { key: 'sms_enabled', label: '启用手机接码', type: 'boolean' },
+          { key: 'sms_provider', label: '接码平台', type: 'select' },
+          { key: 'sms_api_key', label: 'API Key', secret: true },
+          { key: 'sms_service', label: '服务代码', placeholder: 'dr（OpenAI / ChatGPT）' },
+        ],
+      },
+      {
+        title: '国家选择',
+        desc: 'OpenAI 自 2025 年起对多数国家改用 WhatsApp 验证，实测只有泰国（52）走纯短信稳定可用',
+        fields: [
+          { key: 'sms_country', label: '默认国家 ID', placeholder: '52' },
+          { key: 'sms_auto_country', label: '自动选最优国家', type: 'boolean' },
+          {
+            key: 'sms_allowed_countries',
+            label: '允许的国家（可选）',
+            placeholder: '英文逗号分隔，例如 52,4,10；留空则全平台自由选',
+          },
+          { key: 'sms_auto_min_stock', label: '自动选号最低库存', placeholder: '20' },
+          { key: 'sms_auto_max_price', label: '自动选号价格上限', placeholder: '0 表示不限' },
+        ],
+      },
+      {
+        title: '租号与重试',
+        desc: '单号窗口内会按固定节奏触发 OpenAI 端 resend，窗口用尽则换号',
+        fields: [
+          { key: 'sms_max_price', label: '单号价格上限', placeholder: '留空或 0 表示不限' },
+          { key: 'sms_fixed_price', label: '固定价格', placeholder: '留空表示不锁价' },
+          { key: 'sms_reuse_phone', label: '复用同一号码', type: 'boolean' },
+          { key: 'sms_phone_success_max', label: '单号复用上限', placeholder: '3' },
+          { key: 'sms_per_phone_timeout', label: '单号等待秒数', placeholder: '80' },
+          { key: 'sms_max_phone_attempts', label: '最多换号次数', placeholder: '3' },
+          { key: 'sms_code_retries_per_phone', label: '单号内验证重试次数', placeholder: '2' },
         ],
       },
     ],
@@ -724,6 +764,75 @@ function CFWorkerDomainPoolSection({ form }: { form: any }) {
       <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
         仅已启用域名会参与注册；点击已启用标签可直接移除。
       </Typography.Text>
+    </Card>
+  )
+}
+
+interface SmsCountryRow {
+  country: string
+  name: string
+  price: number | null
+  count: number | null
+  openai_sms_whitelisted: boolean
+}
+
+function SmsProbePanel({ form }: { form: any }) {
+  const [balance, setBalance] = useState<number | null>(null)
+  const [countries, setCountries] = useState<SmsCountryRow[]>([])
+  const [loading, setLoading] = useState<'' | 'balance' | 'countries'>('')
+
+  // 探针用表单里的现值而不是已保存的配置：用户往往是刚粘上一把新 key 就想试试。
+  const probeBody = () => ({
+    provider: String(form.getFieldValue('sms_provider') || ''),
+    api_key: String(form.getFieldValue('sms_api_key') || ''),
+    service: String(form.getFieldValue('sms_service') || ''),
+    limit: 20,
+  })
+
+  const probe = async (kind: 'balance' | 'countries') => {
+    setLoading(kind)
+    try {
+      const data = await apiFetch(`/sms/${kind}`, {
+        method: 'POST',
+        body: JSON.stringify(probeBody()),
+      })
+      if (kind === 'balance') {
+        setBalance(Number(data.balance))
+        message.success(`余额 ${data.balance}`)
+      } else {
+        setCountries(data.items || [])
+        message.success(`已获取 ${(data.items || []).length} 个国家`)
+      }
+    } catch (err: any) {
+      message.error(err?.message || '接码平台探测失败')
+    } finally {
+      setLoading('')
+    }
+  }
+
+  return (
+    <Card title="平台自检" size="small" style={{ marginBottom: 16 }}>
+      <Space wrap>
+        <Button onClick={() => probe('balance')} loading={loading === 'balance'}>
+          测试余额
+        </Button>
+        <Button onClick={() => probe('countries')} loading={loading === 'countries'}>
+          查询国家排名
+        </Button>
+        {balance !== null ? <Tag color="green">余额 {balance}</Tag> : null}
+      </Space>
+      {countries.length > 0 ? (
+        <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {countries.map((row) => (
+            <Tag key={row.country} color={row.openai_sms_whitelisted ? 'green' : 'default'}>
+              {row.country} {row.name} · {row.price} · 库存 {row.count}
+            </Tag>
+          ))}
+        </div>
+      ) : null}
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
+        绿色标签是 OpenAI 走纯短信的国家，其余国家可能被要求用 WhatsApp 验证从而收不到码。
+      </Typography.Paragraph>
     </Card>
   )
 }
@@ -1800,6 +1909,9 @@ export default function Settings() {
       data.cfworker_random_name_subdomain = parseBooleanConfigValue(data.cfworker_random_name_subdomain)
       data.contribution_enabled = parseBooleanConfigValue(data.contribution_enabled)
       data.email_domain_rule_enabled = parseBooleanConfigValue(data.email_domain_rule_enabled)
+      for (const key of SMS_BOOLEAN_KEYS) {
+        data[key] = parseBooleanConfigValue(data[key])
+      }
       if (!String(data.email_domain_level_count ?? '').trim()) {
         data.email_domain_level_count = 2
       }
@@ -1868,6 +1980,9 @@ export default function Settings() {
       values.cfworker_random_name_subdomain = parseBooleanConfigValue(values.cfworker_random_name_subdomain)
       values.contribution_enabled = parseBooleanConfigValue(values.contribution_enabled)
       values.email_domain_rule_enabled = parseBooleanConfigValue(values.email_domain_rule_enabled)
+      for (const key of SMS_BOOLEAN_KEYS) {
+        values[key] = parseBooleanConfigValue(values[key])
+      }
       const rawDomainLevelCount = Number.parseInt(String(values.email_domain_level_count ?? '').trim(), 10)
       if (values.mail_provider === 'cfworker' && values.email_domain_rule_enabled) {
         if (!Number.isInteger(rawDomainLevelCount) || rawDomainLevelCount < 2) {
@@ -1898,6 +2013,7 @@ export default function Settings() {
         custom_contribution_token: values.custom_contribution_token,
         email_domain_rule_enabled: values.email_domain_rule_enabled,
         email_domain_level_count: values.email_domain_level_count,
+        ...Object.fromEntries(SMS_BOOLEAN_KEYS.map((key) => [key, values[key]])),
       })
       message.success('保存成功')
       setSaved(true)
@@ -1984,6 +2100,7 @@ export default function Settings() {
               ) : (
                 <>
                   {activeTab === 'captcha' ? <SolverStatus /> : null}
+                  {activeTab === 'sms' ? <SmsProbePanel form={form} /> : null}
                   {activeTab === 'mailbox' ? (
                     <>
                       {mailboxSections.defaultSection ? (

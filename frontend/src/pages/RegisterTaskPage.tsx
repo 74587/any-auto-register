@@ -109,12 +109,9 @@ export default function RegisterTaskPage() {
         cfworker_random_subdomain: parseBooleanConfigValue(cfg.cfworker_random_subdomain),
         cfworker_random_name_subdomain: parseBooleanConfigValue(cfg.cfworker_random_name_subdomain),
         cfworker_fingerprint: cfg.cfworker_fingerprint || '',
-        smstome_cookie: cfg.smstome_cookie || '',
-        smstome_country_slugs: cfg.smstome_country_slugs || '',
-        smstome_phone_attempts: cfg.smstome_phone_attempts || '',
-        smstome_otp_timeout_seconds: cfg.smstome_otp_timeout_seconds || '',
-        smstome_poll_interval_seconds: cfg.smstome_poll_interval_seconds || '',
-        smstome_sync_max_pages_per_country: cfg.smstome_sync_max_pages_per_country || '',
+        sms_country: cfg.sms_country || '',
+        sms_per_phone_timeout: cfg.sms_per_phone_timeout || '',
+        sms_max_phone_attempts: cfg.sms_max_phone_attempts || '',
         luckmail_base_url: cfg.luckmail_base_url || 'https://mails.luckyous.com/',
         luckmail_api_key: cfg.luckmail_api_key || '',
         luckmail_email_type: cfg.luckmail_email_type || '',
@@ -173,12 +170,9 @@ export default function RegisterTaskPage() {
       cfworker_random_subdomain: values.cfworker_random_subdomain,
       cfworker_random_name_subdomain: values.cfworker_random_name_subdomain,
       cfworker_fingerprint: values.cfworker_fingerprint,
-      smstome_cookie: values.smstome_cookie,
-      smstome_country_slugs: values.smstome_country_slugs,
-      smstome_phone_attempts: values.smstome_phone_attempts,
-      smstome_otp_timeout_seconds: values.smstome_otp_timeout_seconds,
-      smstome_poll_interval_seconds: values.smstome_poll_interval_seconds,
-      smstome_sync_max_pages_per_country: values.smstome_sync_max_pages_per_country,
+      sms_country: values.sms_country,
+      sms_per_phone_timeout: values.sms_per_phone_timeout,
+      sms_max_phone_attempts: values.sms_max_phone_attempts,
       luckmail_base_url: values.luckmail_base_url,
       luckmail_api_key: values.luckmail_api_key,
       luckmail_email_type: values.luckmail_email_type,
@@ -608,27 +602,19 @@ export default function RegisterTaskPage() {
         )}
 
         {platform === 'chatgpt' && (
-          <Card title="ChatGPT 手机验证" style={{ marginBottom: 16 }}>
+          <Card title="ChatGPT 手机接码" style={{ marginBottom: 16 }}>
             <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              仅在 OAuth 流程进入 `add_phone` 时使用，用于自动取号并轮询短信验证码。
+              仅在注册链路进入 add-phone 时使用：自动租号、等短信、验证，全程无人值守。
+              平台与 API Key 在「设置 → 手机接码」里配置，这里只覆盖本次任务的参数。
             </Text>
-            <Form.Item name="smstome_cookie" label="SMSToMe Cookie">
-              <Input.Password placeholder="cf_clearance=...; PHPSESSID=..." />
+            <Form.Item name="sms_country" label="国家 ID（可选）">
+              <Input placeholder="52（泰国，OpenAI 纯短信白名单）" />
             </Form.Item>
-            <Form.Item name="smstome_country_slugs" label="国家列表">
-              <Input placeholder="united-kingdom,poland,finland" />
+            <Form.Item name="sms_per_phone_timeout" label="单号等待秒数（可选）">
+              <Input placeholder="80" />
             </Form.Item>
-            <Form.Item name="smstome_phone_attempts" label="手机号尝试次数">
+            <Form.Item name="sms_max_phone_attempts" label="最多换号次数（可选）">
               <Input placeholder="3" />
-            </Form.Item>
-            <Form.Item name="smstome_otp_timeout_seconds" label="短信等待秒数">
-              <Input placeholder="45" />
-            </Form.Item>
-            <Form.Item name="smstome_poll_interval_seconds" label="轮询间隔秒数">
-              <Input placeholder="5" />
-            </Form.Item>
-            <Form.Item name="smstome_sync_max_pages_per_country" label="每国同步页数">
-              <Input placeholder="5" />
             </Form.Item>
           </Card>
         )}
