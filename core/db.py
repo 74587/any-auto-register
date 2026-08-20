@@ -87,6 +87,40 @@ class OutlookAccountModel(SQLModel, table=True):
     last_used: Optional[datetime] = None
 
 
+class ICloudAccountModel(SQLModel, table=True):
+    """iCloud 主号。Web Session 与 IMAP 凭据统一以 AES-256-GCM 密文保存。"""
+
+    __tablename__ = "icloud_accounts"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(index=True, sa_column_kwargs={"unique": True})
+    display_name: str = ""
+    region: str = "global"
+    status: str = "active"
+    enabled: bool = True
+    credentials_cipher: str = ""
+    sync_error: str = ""
+    last_sync_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class ICloudAliasModel(SQLModel, table=True):
+    """从主号生成或同步得到的 Hide My Email 隐私邮箱。"""
+
+    __tablename__ = "icloud_aliases"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(index=True, foreign_key="icloud_accounts.id")
+    address: str = Field(index=True, sa_column_kwargs={"unique": True})
+    label: str = ""
+    note: str = ""
+    status: str = "active"
+    provider_id: str = ""
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class ProxyModel(SQLModel, table=True):
     __tablename__ = "proxies"
 
