@@ -18,7 +18,6 @@
 
 ## 目录
 
-- [项目简介](#项目简介)
 - [当前界面与实际平台展示](#当前界面与实际平台展示)
 - [功能特性](#功能特性)
 - [自营产品](#自营产品)
@@ -38,10 +37,6 @@
 - [打赏博主](#赞助支持)
 - [Star History](#star-history)
 - [License](#license)
-
-## 项目简介
-
-本项目基于 [lxf746/any-auto-register](https://github.com/lxf746/any-auto-register.git) 二次开发
 
 ## 当前界面与实际平台展示
 
@@ -99,7 +94,7 @@
 | 前端 | React + TypeScript + Vite |
 | HTTP | curl_cffi |
 | 浏览器自动化 | Playwright / Camoufox |
-| ChatGPT 注册协议 | [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register)（纯协议，Sentinel PoW 走 Node 沙箱） |
+| ChatGPT 注册协议 | 纯协议实现，Sentinel PoW 走 Node 沙箱 |
 
 ## 环境要求
 
@@ -114,7 +109,7 @@
 
 ### 1. 注册协议
 
-ChatGPT 的整条注册链路移植自 [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register)，代码位于 `platforms/chatgpt/protocol/`，是**纯协议实现，不需要浏览器**：
+ChatGPT 的整条注册链路位于 `platforms/chatgpt/protocol/`，是**纯协议实现，不需要浏览器**：
 
 - `http_client.py` —— 基于 `curl_cffi` 的 TLS 指纹会话
 - `auth_flow.py` —— 驱动 OpenAI authorize 状态机（注册、OTP、add-phone、Codex OAuth）
@@ -122,7 +117,7 @@ ChatGPT 的整条注册链路移植自 [Regert888/gpt-auto-register](https://git
 
 > ⚠️ **Sentinel 需要 Node 运行时。** 自己合成的 PoW token 能骗过 `/sentinel/req` 的表层校验，但发码服务会在服务端复核，结果是验证码邮件被静默丢弃——链路看着一切正常却永远收不到码。所以必须有可执行的 `node`（>= 18），如果不在 `PATH` 里可用 `OPENAI_SENTINEL_NODE_PATH` 指定绝对路径。
 
-本仓库在协议层之上只接了三个注入点，不改协议本身：邮箱池适配器（`protocol/mailbox_adapter.py`）、手机接码控制器（`services/sms_service.py`）、密码生效回调。任务级配置通过实例参数下传，**不写进程环境变量**，因此多个注册任务并发时互不干扰。
+协议层之上只有三个注入点：邮箱池适配器（`protocol/mailbox_adapter.py`）、手机接码控制器（`services/sms_service.py`）、密码生效回调。任务级配置通过实例参数下传，**不写进程环境变量**，因此多个注册任务并发时互不干扰。
 
 ### 2. ChatGPT Token 方案切换
 
@@ -446,12 +441,6 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 - 如果你只需要 Web UI、账号管理、任务调度和本地 Solver，当前 Compose 配置可直接使用
 
 ## 插件与外部依赖
-
-### ChatGPT 注册协议来源
-
-`platforms/chatgpt/protocol/` 下的协议栈与 `services/sms_service.py` 的接码实现移植自：
-
-- <https://github.com/Regert888/gpt-auto-register>
 
 ### 临时邮箱方案来源
 
