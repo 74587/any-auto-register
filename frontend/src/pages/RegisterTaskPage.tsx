@@ -18,12 +18,18 @@ import {
   CloseCircleOutlined,
   LoadingOutlined,
 } from '@ant-design/icons'
+import { listICloudAccounts, type ICloudAccount } from '@/api/icloud'
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
 import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatGPTRegistrationMode'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
 import { buildChatGPTRegistrationRequestAdapter } from '@/lib/chatgptRegistrationRequestAdapter'
-import { getExecutorOptions, normalizeExecutorForPlatform } from '@/lib/platformExecutorOptions'
+import {
+  PLATFORM_OPTIONS,
+  getExecutorOptions,
+  getPlatformMeta,
+  normalizeExecutorForPlatform,
+} from '@/lib/platforms'
 import { apiFetch } from '@/lib/utils'
 
 const { Text } = Typography
@@ -37,8 +43,15 @@ export default function RegisterTaskPage() {
   const [form] = Form.useForm()
   const [task, setTask] = useState<any>(null)
   const [polling, setPolling] = useState(false)
+  const [icloudAccounts, setIcloudAccounts] = useState<ICloudAccount[]>([])
   const { mode: chatgptRegistrationMode, setMode: setChatgptRegistrationMode } =
     usePersistentChatGPTRegistrationMode()
+
+  useEffect(() => {
+    listICloudAccounts()
+      .then((accounts) => setIcloudAccounts(accounts.filter((item) => item.enabled)))
+      .catch(() => setIcloudAccounts([]))
+  }, [])
 
   useEffect(() => {
     apiFetch('/config').then((cfg) => {
@@ -222,6 +235,7 @@ export default function RegisterTaskPage() {
   const captchaSolver = Form.useWatch('captcha_solver', form)
   const platform = Form.useWatch('platform', form)
   const executorOptions = getExecutorOptions(platform)
+  const usesMailbox = getPlatformMeta(platform)?.usesMailbox ?? true
 
   useEffect(() => {
     const currentExecutor = form.getFieldValue('executor_type')
@@ -259,16 +273,7 @@ export default function RegisterTaskPage() {
       }}>
         <Card title="基本配置" style={{ marginBottom: 16 }}>
           <Form.Item name="platform" label="平台" rules={[{ required: true }]}>
-            <Select
-              options={[
-                { value: 'chatgpt', label: 'ChatGPT' },
-                { value: 'cursor', label: 'Cursor' },
-                { value: 'kiro', label: 'Kiro' },
-                { value: 'grok', label: 'Grok' },
-                { value: 'tavily', label: 'Tavily' },
-                { value: 'openblocklabs', label: 'OpenBlockLabs' },
-              ]}
-            />
+            <Select options={PLATFORM_OPTIONS} />
           </Form.Item>
           <Form.Item name="executor_type" label="执行器" rules={[{ required: true }]}>
             <Select options={executorOptions} />
@@ -308,6 +313,36 @@ export default function RegisterTaskPage() {
           )}
         </Card>
 
+        {!usesMailbox && (
+          <Card title="iCloud 隐私邮箱配置" style={{ marginBottom: 16 }}>
+            <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+              批量生成 Hide My Email 地址。请先在“iCloud 主号”页面完成 Apple ID 登录，
+              Apple 对每个主号限制每滚动小时最多成功生成 5 个地址。
+            </Text>
+            <Form.Item
+              name="icloud_account_email"
+              label="主号"
+              extra="留空则自动选择第一个可用主号"
+            >
+              <Select
+                allowClear
+                placeholder="自动选择"
+                options={icloudAccounts.map((account) => ({
+                  value: account.email,
+                  label: account.email,
+                }))}
+              />
+            </Form.Item>
+            <Form.Item name="icloud_alias_label" label="标签（可选）">
+              <Input placeholder="any-auto-register" />
+            </Form.Item>
+            <Form.Item name="icloud_alias_note" label="备注（可选）">
+              <Input placeholder="批量生成" />
+            </Form.Item>
+          </Card>
+        )}
+
+        {usesMailbox && (
         <Card title="邮箱配置" style={{ marginBottom: 16 }}>
           <Form.Item name="mail_provider" label="邮箱服务" rules={[{ required: true }]}>
             <Select
@@ -563,6 +598,7 @@ export default function RegisterTaskPage() {
             </>
           )}
         </Card>
+        )}
 
         {platform === 'chatgpt' && (
           <Card title="ChatGPT 手机验证" style={{ marginBottom: 16 }}>

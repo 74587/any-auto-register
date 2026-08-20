@@ -11,10 +11,12 @@ import {
   MoonOutlined,
   LogoutOutlined,
   PlayCircleOutlined,
+  CloudOutlined,
 } from '@ant-design/icons'
 import zhCN from 'antd/locale/zh_CN'
 import Dashboard from '@/pages/Dashboard'
 import Accounts from '@/pages/Accounts'
+import ICloudPage from '@/pages/ICloud'
 import RegisterTaskPage from '@/pages/RegisterTaskPage'
 import Proxies from '@/pages/Proxies'
 import Settings from '@/pages/Settings'
@@ -80,9 +82,7 @@ function AppContent() {
 
   useEffect(() => {
     apiFetch('/platforms')
-      .then(d => setPlatforms((d || [])
-        .filter((p: any) => !['tavily', 'cursor'].includes(p.name))
-        .map((p: any) => ({ key: p.name, label: p.display_name }))))
+      .then(d => setPlatforms((d || []).map((p: any) => ({ key: p.name, label: p.display_name }))))
       .catch(() => {})
   }, [])
 
@@ -93,6 +93,7 @@ function AppContent() {
     const path = location.pathname
     if (path === '/') return ['/']
     if (path.startsWith('/accounts')) return [path]
+    if (path === '/icloud') return ['/icloud']
     if (path === '/history') return ['/history']
     if (path === '/proxies') return ['/proxies']
     if (path === '/settings') return ['/settings']
@@ -121,6 +122,11 @@ function AppContent() {
           label: p.label,
         })),
       ],
+    },
+    {
+      key: '/icloud',
+      icon: <CloudOutlined />,
+      label: 'iCloud 隐私邮箱',
     },
     {
       key: '/history',
@@ -240,6 +246,7 @@ function AppContent() {
             <Route path="/accounts" element={<Accounts />} />
             <Route path="/accounts/:platform" element={<Accounts />} />
             <Route path="/register" element={<RegisterTaskPage />} />
+            <Route path="/icloud" element={<ICloudPage />} />
             <Route path="/running-tasks" element={<RunningTasks />} />
             <Route path="/history" element={<TaskHistory />} />
             <Route path="/proxies" element={<Proxies />} />
