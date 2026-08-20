@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -18,6 +19,8 @@ from platforms.icloud import (
 )
 from services import icloud_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/icloud", tags=["icloud"])
 
 # 业务错误码到 HTTP 状态码的映射，未列出的按 502 处理。
@@ -31,6 +34,7 @@ _ERROR_STATUS = {
     "invalid_verification_code": 400,
     "invalid_credentials": 401,
     "session_expired": 401,
+    "credentials_unreadable": 409,
     "mail_access_denied": 403,
     "provider_rate_limited": 429,
     "upstream_rejected": 502,
@@ -41,7 +45,12 @@ _ERROR_STATUS = {
 
 
 def _http_error(error: ICloudError) -> HTTPException:
-    return HTTPException(_ERROR_STATUS.get(error.code, 502), str(error))
+    status = _ERROR_STATUS.get(error.code, 502)
+    # 上游失败的原因只存在于响应体里，而反向代理（Cloudflare 等）会把 5xx 的响应体
+    # 换成自己的错误页，运维侧就彻底看不到 Apple 到底回了什么。所以这里落一条日志。
+    if status >= 500:
+        logger.error("iCloud 上游失败 [%s] -> HTTP %s: %s", error.code, status, error)
+    return HTTPException(status, str(error))
 
 
 class LoginStartRequest(BaseModel):
