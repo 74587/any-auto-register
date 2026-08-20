@@ -95,17 +95,27 @@ def _run_quickjs_action(
 ) -> dict:
     body = dict(payload)
     body["action"] = action
-    proc = subprocess.run(
-        [_resolve_node_binary(), str(quickjs_script)],
-        input=json.dumps(body, ensure_ascii=False),
-        text=True,
-        capture_output=True,
-        timeout=max(10, int(timeout_ms / 1000) + 5),
-        env={
-            **os.environ,
-            "OPENAI_SENTINEL_SDK_FILE": str(sdk_file),
-        },
-    )
+    node = _resolve_node_binary()
+    try:
+        proc = subprocess.run(
+            [node, str(quickjs_script)],
+            input=json.dumps(body, ensure_ascii=False),
+            text=True,
+            capture_output=True,
+            timeout=max(10, int(timeout_ms / 1000) + 5),
+            env={
+                **os.environ,
+                "OPENAI_SENTINEL_SDK_FILE": str(sdk_file),
+            },
+        )
+    except FileNotFoundError as exc:
+        # 缺 node 时的表象是"注册流程一切正常但验证码永远收不到"，
+        # 排查成本极高，所以这里把原因说透而不是让它混进通用异常。
+        raise RuntimeError(
+            f"找不到 Node 运行时 ({node})：Sentinel PoW 必须在 Node 沙箱里跑 OpenAI 的 sdk.js，"
+            "缺少它会导致验证码邮件被服务端静默丢弃。请安装 Node.js 18+，"
+            "或用 OPENAI_SENTINEL_NODE_PATH 指定可执行文件的绝对路径。"
+        ) from exc
     if proc.returncode != 0:
         raise RuntimeError(f"QuickJS 执行失败: {(proc.stderr or proc.stdout or 'unknown').strip()[:300]}")
     out = (proc.stdout or "").strip()

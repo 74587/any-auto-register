@@ -51,6 +51,7 @@ Theo mã nguồn frontend hiện tại, **các nền tảng hiển thị mặc �
 - **Nhiều chế độ thực thi**: Giao thức thuần, trình duyệt không giao diện (headless), trình duyệt có giao diện (headed)
 - **Tích hợp nhiều dịch vụ email**: Tích hợp sẵn, bên thứ 3,自建 Worker Email và nhiều giải pháp khác
 - **Hỗ trợ Captcha**: YesCaptcha, Turnstile Solver cục bộ (Camoufox)
+- **Nhận mã SMS**: SmsBower / HeroSMS tự động thuê số và lấy mã OTP — hoàn toàn tự động khi ChatGPT yêu cầu add-phone
 - **Hỗ trợ Proxy**: Luân phiên pool proxy, duy trì trạng thái proxy, tích hợp proxy trong quá trình đăng ký
 - **Đăng ký hàng loạt**: Hỗ trợ cài đặt số lượng đăng ký, số lượng đồng thời, độ trễ khởi động giữa mỗi tài khoản
 - **Log thời gian thực**: Xem log đăng ký trực tiếp trên frontend
@@ -92,11 +93,12 @@ Cảm ơn những người bạn và đối tác đã hỗ trợ any-auto-regist
 | Frontend | React + TypeScript + Vite |
 | HTTP | curl_cffi |
 | Tự động hóa trình duyệt | Playwright / Camoufox |
+| Giao thức đăng ký ChatGPT | [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register) (giao thức thuần; Sentinel PoW chạy trong sandbox Node) |
 
 ## Yêu cầu môi trường
 
 - Python 3.12+
-- Node.js 18+
+- Node.js 18+ (vừa dùng để build frontend, vừa là runtime của bộ giải Sentinel PoW cho ChatGPT — **bắt buộc phải chạy được khi đăng ký**)
 - Conda (khuyến nghị)
 - Windows (khuyến nghị sử dụng script khởi động có sẵn trong repo)
 
@@ -104,15 +106,27 @@ Cảm ơn những người bạn và đối tác đã hỗ trợ any-auto-regist
 
 Trong phiên bản hiện tại, **ChatGPT là một trong những nền tảng có chức năng hoàn thiện nhất**, không chỉ hỗ trợ đăng ký mà còn quản lý vòng đời Token, dò trạng thái và đồng bộ hệ thống bên ngoài.
 
-### 1. Chuyển đổi phương thức Token ChatGPT
+### 1. Giao thức đăng ký
+
+Toàn bộ luồng đăng ký ChatGPT được port từ [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register), nằm trong `platforms/chatgpt/protocol/`, là **triển khai giao thức thuần, không cần trình duyệt**:
+
+- `http_client.py` — phiên làm việc với vân tay TLS dựa trên `curl_cffi`
+- `auth_flow.py` — điều khiển máy trạng thái authorize của OpenAI (đăng ký, OTP, add-phone, Codex OAuth)
+- `sentinel_quickjs.py` + `openai_sentinel_quickjs.js` — giải Sentinel PoW bằng cách chạy chính `sdk.js` của OpenAI trong sandbox Node
+
+> ⚠️ **Sentinel cần runtime Node.** Token PoW tự chế vượt được lớp kiểm tra bề mặt ở `/sentinel/req`, nhưng dịch vụ gửi mã sẽ kiểm tra lại phía máy chủ, kết quả là email mã xác minh bị âm thầm loại bỏ — luồng nhìn có vẻ bình thường nhưng mã không bao giờ đến. Bắt buộc phải có `node` (>= 18) chạy được; nếu không nằm trong `PATH`, hãy đặt `OPENAI_SENTINEL_NODE_PATH` trỏ tới đường dẫn tuyệt đối.
+
+Repo này chỉ gắn ba điểm inject lên trên tầng giao thức mà không sửa chính giao thức: adapter pool email (`protocol/mailbox_adapter.py`), controller nhận mã SMS (`services/sms_service.py`), và callback khi mật khẩu có hiệu lực. Cấu hình theo từng tác vụ được truyền qua tham số instance, **không ghi vào biến môi trường tiến trình**, nên nhiều tác vụ đăng ký chạy song song không ảnh hưởng lẫn nhau.
+
+### 2. Chuyển đổi phương thức Token ChatGPT
 
 Phiên bản hiện tại cung cấp hai chế độ đăng ký ChatGPT:
 
 - **Có RT** (khuyến nghị mặc định)
-  - Đi theo đường dẫn PR mới
+  - Chạy đầy đủ luồng Codex OAuth
   - Xuất ra **Access Token + Refresh Token**
-- **Không có RT** (tương thích phương thức cũ)
-  - Đi theo đường dẫn cũ
+- **Không có RT**
+  - Bỏ qua Codex OAuth (tiết kiệm khoảng 10 giây mỗi tài khoản)
   - Chỉ xuất ra **Access Token / Session**
   - Các chức năng phụ thuộc RT có thể không hoạt động
 
@@ -120,6 +134,27 @@ Chuyển đổi này có thể tìm thấy ở:
 
 - Trang tác vụ đăng ký
 - Cửa sổ popup đăng ký ChatGPT
+
+### 3. Nhận mã SMS (add-phone)
+
+OpenAI yêu cầu một số lượt đăng ký phải liên kết số điện thoại. Khi gặp add-phone, hệ thống tự thuê số, chờ SMS và gửi mã xác minh mà không cần thao tác thủ công. Cấu hình tại **Cài đặt → 手机接码 (Nhận mã SMS)**:
+
+| Mục cấu hình | Mô tả |
+| --- | --- |
+| Bật nhận mã SMS | Khi tắt, add-phone quay về đường dẫn số thủ công (`OPENAI_PHONE_NUMBER`) |
+| Nền tảng nhận mã | SmsBower / HeroSMS — cả hai dùng chung giao thức `handler_api.php` của sms-activate |
+| API Key | Khóa nền tảng; kiểm tra ngay bằng nút "Kiểm tra số dư" |
+| Mã dịch vụ | Nền tảng phân kho theo mã dịch vụ; OpenAI tương ứng với `dr` |
+| ID quốc gia mặc định | Mặc định `52` (Thái Lan) |
+| Tự chọn quốc gia tốt nhất | Chọn theo giá tăng dần kèm tồn kho; có thể giới hạn ứng viên bằng danh sách quốc gia cho phép |
+| Tái sử dụng cùng số | Dùng lại số trong thời hạn thuê 20 phút cho đến khi đạt giới hạn số lần thành công mỗi số |
+| Số giây chờ mỗi số / Số lần đổi số tối đa / Số lần thử lại mã trên mỗi số | Chiến lược thử lại khi không nhận được mã |
+
+"Truy vấn xếp hạng quốc gia" liệt kê giá và tồn kho theo từng quốc gia cho mã dịch vụ đã chọn; thẻ màu xanh là các quốc gia OpenAI vẫn dùng SMS thuần.
+
+> ⚠️ Từ năm 2025 OpenAI đã chuyển phần lớn quốc gia sang xác minh WhatsApp. Thực tế chỉ có **Thái Lan (country_id=52)** ổn định với SMS thuần. Các quốc gia khác có thể trả về số chỉ dùng WhatsApp và sẽ không nhận được SMS; chế độ tự chọn sẽ cảnh báo nhưng không chặn.
+
+ID quốc gia, số giây chờ mỗi số và số lần đổi số tối đa còn có thể ghi đè theo từng tác vụ ở trang tác vụ đăng ký. Nền tảng và API Key chỉ được quản lý trong cấu hình toàn cục.
 
 ### 4. Đồng bộ trạng thái hàng loạt & re-upload cho ChatGPT
 
@@ -385,8 +420,9 @@ Host machine sẽ mount vào:
 | `APP_ENABLE_SOLVER` | `1` | Có tự động khởi chạy Solver không, đặt `0` để tắt |
 | `SOLVER_PORT` | `8889` | Cổng lắng nghe Solver |
 | `LOCAL_SOLVER_URL` | `http://127.0.0.1:8889` | Địa chỉ backend truy cập Solver |
+| `OPENAI_SENTINEL_NODE_PATH` | `node` | File thực thi Node dùng cho bộ giải Sentinel PoW; điền đường dẫn tuyệt đối khi `node` không nằm trong `PATH` |
 
-Nếu cần thay đổi cấu hình như `SMSTOME_COOKIE`, `OPENAI_*`, chỉ cần ghi vào file `.env` ở thư mục gốc repo, `docker compose` sẽ tự động inject vào môi trường container.
+Nếu cần thay đổi cấu hình như `OPENAI_*`, chỉ cần ghi vào file `.env` ở thư mục gốc repo, `docker compose` sẽ tự động inject vào môi trường container.
 
 ### Tham số build Camoufox
 
@@ -404,6 +440,12 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 - Nếu chỉ cần Web UI, quản lý tài khoản, điều phối tác vụ và Solver cục bộ, cấu hình Compose hiện tại có thể sử dụng trực tiếp
 
 ## Plugin & phụ thuộc bên ngoài
+
+### Nguồn giao thức đăng ký ChatGPT
+
+Bộ giao thức trong `platforms/chatgpt/protocol/` và phần nhận mã SMS trong `services/sms_service.py` được port từ:
+
+- <https://github.com/Regert888/gpt-auto-register>
 
 ### Nguồn email tạm thời
 
@@ -496,6 +538,16 @@ Sau đó khởi động lại:
 ```powershell
 .\start_backend.ps1
 ```
+
+### 6. Đăng ký ChatGPT không nhận được mã xác minh
+
+Trước tiên hãy xác nhận `node` chạy được:
+
+```bash
+node --version
+```
+
+Bộ giải Sentinel PoW chạy `sdk.js` của OpenAI trong sandbox Node. Không có Node thì token tính ra sẽ không vượt được lớp kiểm tra lại phía máy chủ, và **email mã xác minh bị âm thầm loại bỏ** — log không báo lỗi rõ ràng nhưng mã không bao giờ đến. Nếu `node` không nằm trong `PATH`, hãy trỏ `OPENAI_SENTINEL_NODE_PATH` tới đường dẫn tuyệt đối.
 
 ## Cấu trúc dự án
 

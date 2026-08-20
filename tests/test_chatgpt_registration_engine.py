@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from core.base_mailbox import MailboxAccount
@@ -271,6 +272,27 @@ class RegistrationEngineRunTests(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertFalse(result.metadata["partial"])
+
+
+class SentinelNodeRuntimeTests(unittest.TestCase):
+    def test_missing_node_reports_the_real_cause(self):
+        from platforms.chatgpt.protocol import sentinel_quickjs
+
+        with mock.patch.dict(
+            "os.environ", {"OPENAI_SENTINEL_NODE_PATH": "/nonexistent/node"}
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                sentinel_quickjs._run_quickjs_action(
+                    action="requirements",
+                    sdk_file=Path("/tmp/sdk.js"),
+                    quickjs_script=sentinel_quickjs._quickjs_script_path(),
+                    payload={},
+                    timeout_ms=1000,
+                )
+
+        message = str(ctx.exception)
+        self.assertIn("/nonexistent/node", message)
+        self.assertIn("OPENAI_SENTINEL_NODE_PATH", message)
 
 
 class RegistrationResultTests(unittest.TestCase):
