@@ -12,7 +12,6 @@ Multi-platform automated account registration and management system, supporting 
 
 ## Table of Contents
 
-- [Project Overview](#project-overview)
 - [Current Interface & Supported Platforms](#current-interface--supported-platforms)
 - [Features](#features)
 - [Our Products](#our-products)
@@ -32,10 +31,6 @@ Multi-platform automated account registration and management system, supporting 
 - [Support the Author](#support-the-author)
 - [Star History](#star-history)
 - [License](#license)
-
-## Project Overview
-
-This project is a fork/secondary development based on [lxf746/any-auto-register](https://github.com/lxf746/any-auto-register.git).
 
 ## Current Interface & Supported Platforms
 
@@ -93,7 +88,7 @@ Thank you to the following friends and partners for supporting any-auto-register
 | Frontend | React + TypeScript + Vite |
 | HTTP | curl_cffi |
 | Browser Automation | Playwright / Camoufox |
-| ChatGPT Registration Protocol | [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register) (pure protocol; Sentinel PoW runs in a Node sandbox) |
+| ChatGPT Registration Protocol | Pure protocol; Sentinel PoW runs in a Node sandbox |
 
 ## Requirements
 
@@ -108,7 +103,7 @@ In the current version, **ChatGPT is one of the most feature-complete platforms*
 
 ### 1. Registration Protocol
 
-The entire ChatGPT registration pipeline is ported from [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register) and lives in `platforms/chatgpt/protocol/`. It is a **pure protocol implementation that needs no browser**:
+The entire ChatGPT registration pipeline lives in `platforms/chatgpt/protocol/`. It is a **pure protocol implementation that needs no browser**:
 
 - `http_client.py` — TLS-fingerprinted session built on `curl_cffi`
 - `auth_flow.py` — drives the OpenAI authorize state machine (registration, OTP, add-phone, Codex OAuth)
@@ -116,7 +111,7 @@ The entire ChatGPT registration pipeline is ported from [Regert888/gpt-auto-regi
 
 > ⚠️ **Sentinel requires a Node runtime.** A hand-rolled PoW token passes the surface check at `/sentinel/req`, but the mail service re-verifies it server-side, so verification emails get dropped silently — the pipeline looks healthy yet the code never arrives. An executable `node` (>= 18) is mandatory; set `OPENAI_SENTINEL_NODE_PATH` to an absolute path if it is not on `PATH`.
 
-This repository wires only three injection points on top of the protocol layer and leaves the protocol itself untouched: the mailbox pool adapter (`protocol/mailbox_adapter.py`), the SMS controller (`services/sms_service.py`), and the password-effective callback. Task-level settings are passed as instance parameters and **never written to process environment variables**, so concurrent registration tasks do not interfere with each other.
+There are only three injection points on top of the protocol layer: the mailbox pool adapter (`protocol/mailbox_adapter.py`), the SMS controller (`services/sms_service.py`), and the password-effective callback. Task-level settings are passed as instance parameters and **never written to process environment variables**, so concurrent registration tasks do not interfere with each other.
 
 ### 2. ChatGPT Token Mode Switching
 
@@ -440,12 +435,6 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 - If you only need Web UI, account management, task scheduling, and local Solver, the current Compose configuration works out of the box
 
 ## Plugins & External Dependencies
-
-### ChatGPT Registration Protocol Source
-
-The protocol stack under `platforms/chatgpt/protocol/` and the SMS implementation in `services/sms_service.py` are ported from:
-
-- <https://github.com/Regert888/gpt-auto-register>
 
 ### Temporary Email Source
 
