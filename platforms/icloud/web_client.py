@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 from urllib.parse import urlencode, urlparse, urlunparse
@@ -42,6 +43,12 @@ from .transport import (
     web_headers,
 )
 from .utils import new_uuid, normalize_email_address
+
+logger = logging.getLogger(__name__)
+
+# 只有这两个动作对上游没有副作用：list 是纯读，generate 只是让 Apple 提议一个地址，
+# 真正占用地址的是随后的 reserve。其余动作重试可能造成重复注销/删除。
+_RETRIABLE_HME_ACTIONS = frozenset({"v2/hme/list", "v1/hme/generate"})
 
 
 class ICloudWebClient:
@@ -217,6 +224,26 @@ class ICloudWebClient:
         action: str,
         payload: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
+        try:
+            return self._hme_request_once(credentials, method, action, payload)
+        except ICloudError as exc:
+            # 线上观察到：刚完成两步验证后的头一两次调用，Apple 偶发回一个不带原因的
+            # success:false，隔一会儿用同一份凭据就能成功。对没有副作用的动作重试一次
+            # 就能把这种抖动挡掉；reserve/delete 这类会改状态的绝不能重试。
+            if exc.code != "upstream_rejected" or action not in _RETRIABLE_HME_ACTIONS:
+                raise
+            logger.warning("iCloud HME 拒绝了 %s，疑似上游抖动，重试一次", action)
+            # 顺带强制重新探测构建号：万一哪天真是构建号过期导致的，这一步能自愈。
+            self._builds.invalidate(_builds_region(credentials))
+            return self._hme_request_once(credentials, method, action, payload)
+
+    def _hme_request_once(
+        self,
+        credentials: ICloudCredentials,
+        method: str,
+        action: str,
+        payload: Optional[Mapping[str, Any]] = None,
+    ) -> dict[str, Any]:
         credentials = self._with_current_builds(credentials)
         _require_hme_credentials(credentials)
         url = self._hme_endpoint(credentials, action)
@@ -243,6 +270,9 @@ class ICloudWebClient:
 
         envelope = _decode_json(response, "iCloud HME")
         if envelope.get("success") is False:
+            # 面向用户的文案会刻意收敛（比如限流不回显上游原文），但排查时需要原文，
+            # 否则只剩一句“HME 拒绝了请求”，完全无从下手。
+            logger.error("iCloud HME 拒绝了 %s，原始响应: %s", action, json.dumps(envelope)[:600])
             raise envelope_error(envelope, "iCloud HME 拒绝了请求")
         result = envelope.get("result")
         return result if isinstance(result, dict) else envelope
@@ -254,11 +284,7 @@ class ICloudWebClient:
         if not hme_official and not mail_official:
             return credentials
 
-        region = credentials.region
-        if not str(region or "").strip():
-            urls = f"{credentials.hme_service_url}{credentials.mail_gateway_url}".lower()
-            region = "china" if "icloud.com.cn" in urls else ""
-        builds = self._builds.get(self._transport, region)
+        builds = self._builds.get(self._transport, _builds_region(credentials))
 
         updated = ICloudCredentials.from_dict(credentials.to_dict())
         if hme_official:
@@ -284,6 +310,15 @@ class ICloudWebClient:
         if credentials.ckjs_build_version:
             query["ckjsBuildVersion"] = credentials.ckjs_build_version
         return urlunparse(base._replace(path=path, query=urlencode(sorted(query.items()))))
+
+
+def _builds_region(credentials: ICloudCredentials) -> str:
+    """凭据没写区域时，从服务地址推断，用于挑对构建号来源站点。"""
+    region = credentials.region
+    if str(region or "").strip():
+        return region
+    urls = f"{credentials.hme_service_url}{credentials.mail_gateway_url}".lower()
+    return "china" if "icloud.com.cn" in urls else ""
 
 
 def _require_hme_credentials(credentials: ICloudCredentials) -> None:
