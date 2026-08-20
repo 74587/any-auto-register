@@ -42,14 +42,12 @@ Dự án này được phát triển lại từ [lxf746/any-auto-register](https
 Theo mã nguồn frontend hiện tại, **các nền tảng hiển thị mặc định trong menu "Quản lý nền tảng"** bao gồm:
 
 - ChatGPT
-- Grok
-- Kiro (AWS Builder ID)
-- OpenBlockLabs
-- Trae.ai
+- iCloud (Hide My Email)
 
 ## Tính năng
 
 - **Quản lý & đăng ký tài khoản đa nền tảng**: Danh sách tài khoản thống nhất, chi tiết, nhập/xuất, xóa, thao tác hàng loạt
+- **iCloud Hide My Email**: Đăng nhập Apple ID (SRP + xác thực hai lớp, hoặc nhập cookie), tạo alias hàng loạt và xem hộp thư của alias
 - **Nhiều chế độ thực thi**: Giao thức thuần, trình duyệt không giao diện (headless), trình duyệt có giao diện (headed)
 - **Tích hợp nhiều dịch vụ email**: Tích hợp sẵn, bên thứ 3,自建 Worker Email và nhiều giải pháp khác
 - **Hỗ trợ Captcha**: YesCaptcha, Turnstile Solver cục bộ (Camoufox)
@@ -152,14 +150,17 @@ Theo cấu hình thực tế trong trang đăng ký, dự án hỗ trợ các d�
 | Laoudo | `laoudo` | Email cố định |
 | CF Worker | `cfworker` |自建 email qua Cloudflare Worker |
 
-### Ghi chú về email cho Kiro
+### Ghi chú về iCloud Hide My Email
 
-Kiro hiện có kiểm soát rủi ro khá nghiêm ngặt, phương án email sẽ ảnh hưởng đáng kể đến tỉ lệ thành công. Dự án cũng đã lưu lại lưu ý này:
+Nền tảng iCloud không dùng pool email tạm thời ở bảng trên, mà dùng chính địa chỉ Hide My Email của Apple:
 
-- **Email tự xây dựng: tỉ lệ thành công 100%**
-- **Email tạm thời tích hợp sẵn trong dự án: tỉ lệ thành công 0%**
+1. Thêm tài khoản Apple ID chính trong "iCloud Hide My Email → Quản lý tài khoản", theo một trong hai cách:
+   - **Đăng nhập bằng mật khẩu**: chạy giao thức SRP của Apple, hoàn tất xác thực hai lớp khi cần (đẩy tới thiết bị tin cậy hoặc mã SMS);
+   - **Nhập cookie**: dán cookie iCloud xuất từ trình duyệt.
+2. Sau khi đăng nhập, tạo alias hàng loạt trong tab "Alias". Apple giới hạn **tối đa 5 alias mỗi giờ**, backend sẽ tự giới hạn theo từng tài khoản chính.
+3. Mật khẩu IMAP của tài khoản (mật khẩu dành riêng cho ứng dụng) được dùng để đọc hộp thư alias. Mọi thông tin đăng nhập đều được mã hóa AES-256-GCM trước khi lưu.
 
-Do đó khi đăng ký **Kiro (AWS Builder ID)**, khuyến nghị ưu tiên sử dụng **email tự xây dựng**.
+Khóa mã hóa lấy từ biến môi trường `CREDENTIAL_ENCRYPTION_KEY`; nếu chưa đặt, hệ thống tự tạo khóa cục bộ tại `.secrets/credential_key`.
 
 ## Bắt đầu nhanh
 
@@ -398,7 +399,7 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 ### Khuyến nghị sử dụng Docker
 
 - Image hiện tại chủ yếu bao phủ ứng dụng chính và Turnstile Solver cục bộ
-- Logic tự động cài đặt/khởi chạy `grok2api`, `CLIProxyAPI`, `Kiro Account Manager` vẫn thiên về môi trường host machine
+- Logic tự động cài đặt/khởi chạy `CLIProxyAPI` vẫn thiên về môi trường host machine
 - Nếu phụ thuộc vào `conda`, Go hoặc file thực thi Windows, không khuyến nghị chạy trực tiếp trong Linux container hiện tại
 - Nếu chỉ cần Web UI, quản lý tài khoản, điều phối tác vụ và Solver cục bộ, cấu hình Compose hiện tại có thể sử dụng trực tiếp
 
@@ -417,8 +418,6 @@ Dự án hiện hỗ trợ cài đặt/khởi động các thành phần bên ng
 | Dự án | Mục đích | Địa chỉ Git |
 | --- | --- | --- |
 | CLIProxyAPI | Dịch vụ quản lý CPA / Proxy Pool | `https://github.com/router-for-me/CLIProxyAPI.git` |
-| grok2api | Quản lý token Grok, điền ngược, dịch vụ chat/API | `https://github.com/chenyme/grok2api.git` |
-| kiro-account-manager | Plugin quản lý tài khoản Kiro | `https://github.com/hj01857655/kiro-account-manager.git` |
 
 Nút **"Cài đặt phiên bản mới nhất / Cập nhật lên phiên bản mới nhất"** trong trang plugin sẽ đồng bộ code mới nhất từ repo, và đã hỗ trợ **gỡ cài đặt** (sẽ dừng dịch vụ trước, sau đó xóa thư mục plugin cục bộ).
 Mặc định cập nhật theo **semver tag mới nhất**; cũng có thể chuyển về chế độ **branch HEAD** trong "Cài đặt → Plugin → Chiến lược cài đặt/cập nhật".

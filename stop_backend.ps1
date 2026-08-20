@@ -1,7 +1,6 @@
 param(
     [int]$BackendPort = 8000,
     [int]$SolverPort = 8889,
-    [int]$Grok2ApiPort = 8011,
     [int]$CLIProxyAPIPort = 8317,
     [int]$FullStop = 1
 )
@@ -9,7 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ports = @($BackendPort, $SolverPort)
 if ($FullStop -ne 0) {
-    $ports += @($Grok2ApiPort, $CLIProxyAPIPort)
+    $ports += @($CLIProxyAPIPort)
 }
 $ports = $ports | Where-Object { $_ -gt 0 } | Select-Object -Unique
 
@@ -24,20 +23,6 @@ function Get-ProcessIdsByPorts {
         if ($conn.OwningProcess) {
             $result += [int]$conn.OwningProcess
         }
-    }
-    return $result | Select-Object -Unique
-}
-
-function Get-ProcessIdsByNames {
-    param([string[]]$Names)
-    $result = @()
-    foreach ($name in $Names) {
-        try {
-            $items = Get-Process -Name $name -ErrorAction SilentlyContinue
-            foreach ($item in $items) {
-                $result += [int]$item.Id
-            }
-        } catch {}
     }
     return $result | Select-Object -Unique
 }
@@ -101,13 +86,7 @@ function Stop-ProcessTreeSafe {
     return $false
 }
 
-$connections = Get-ProcessIdsByPorts -TargetPorts $ports
-$extraNames = @()
-if ($FullStop -ne 0) {
-    $extraNames += @("KiroAccountManager", "kiro-account-manager")
-}
-$extraPids = Get-ProcessIdsByNames -Names $extraNames
-$targets = @($connections + $extraPids) | Where-Object { $_ } | Select-Object -Unique
+$targets = Get-ProcessIdsByPorts -TargetPorts $ports | Where-Object { $_ } | Select-Object -Unique
 
 if (-not $targets) {
     Write-Host "[INFO] 未发现需要停止的进程"

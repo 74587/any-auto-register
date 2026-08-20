@@ -42,14 +42,12 @@ This project is a fork/secondary development based on [lxf746/any-auto-register]
 Based on the current frontend code and UI, the **platforms displayed by default in the left "Platform Management" menu** are:
 
 - ChatGPT
-- Grok
-- Kiro (AWS Builder ID)
-- OpenBlockLabs
-- Trae.ai
+- iCloud (Hide My Email)
 
 ## Features
 
 - **Multi-platform Account Registration & Management**: Unified account list, details, import/export, deletion, batch operations
+- **iCloud Hide My Email**: Apple ID sign-in (SRP + two-factor auth, or cookie import), batch alias generation, and alias inbox viewing
 - **Multiple Executor Modes**: Pure protocol, headless browser, headed browser
 - **Multiple Email Service Integration**: Built-in, third-party, self-hosted Worker Email, and more
 - **Captcha Support**: YesCaptcha, Local Turnstile Solver (Camoufox)
@@ -152,14 +150,17 @@ Based on the actual configuration in the registration page, the project supports
 | Laoudo | `laoudo` | Fixed email solution |
 | CF Worker | `cfworker` | Self-hosted email via Cloudflare Worker |
 
-### Kiro Email Notes
+### iCloud Hide My Email Notes
 
-Kiro currently has strict risk control, and the email solution significantly affects success rate. The project also retains this important note:
+The iCloud platform does not consume the temporary mailboxes listed above; it uses Apple's own Hide My Email addresses instead:
 
-- **Self-hosted email: 100% success rate**
-- **Built-in temporary email: 0% success rate**
+1. Add an Apple ID primary account under "iCloud Hide My Email → Accounts", either way:
+   - **Password sign-in**: runs Apple's SRP protocol and walks through two-factor auth when required (trusted-device push or SMS code);
+   - **Cookie import**: paste iCloud cookies exported from your browser.
+2. Once signed in, generate aliases in bulk from the "Aliases" tab. Apple caps this at **5 aliases per hour**, and the backend throttles per primary account accordingly.
+3. The account's IMAP password (an app-specific password) is used to read alias inboxes. All credentials are encrypted with AES-256-GCM before being persisted.
 
-Therefore, when registering **Kiro (AWS Builder ID)**, it is recommended to prioritize using a **self-hosted email**.
+The encryption key comes from the `CREDENTIAL_ENCRYPTION_KEY` environment variable; when unset, a local key is generated at `.secrets/credential_key`.
 
 ## Quick Start
 
@@ -398,7 +399,7 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 ### Docker Usage Notes
 
 - The current Docker image primarily covers the main application and local Turnstile Solver
-- Auto-install/launch logic for `grok2api`, `CLIProxyAPI`, `Kiro Account Manager` still favors the host machine environment
+- Auto-install/launch logic for `CLIProxyAPI` still favors the host machine environment
 - If you depend on `conda`, Go, or Windows executables, it is not recommended to run these directly in the current Linux container
 - If you only need Web UI, account management, task scheduling, and local Solver, the current Compose configuration works out of the box
 
@@ -417,8 +418,6 @@ The project currently supports on-demand installation/launch of the following ex
 | Project | Purpose | Git URL |
 | --- | --- | --- |
 | CLIProxyAPI | CPA / Proxy pool management service | `https://github.com/router-for-me/CLIProxyAPI.git` |
-| grok2api | Grok token management, backfill, chat/API service | `https://github.com/chenyme/grok2api.git` |
-| kiro-account-manager | Kiro account management plugin | `https://github.com/hj01857655/kiro-account-manager.git` |
 
 The **"Install Latest / Update to Latest"** button in the plugin page syncs the latest code from the repo, and now supports **uninstallation** (stops the service first, then deletes the local plugin directory).
 By default, it updates to the **latest semver tag**; you can also switch back to **branch HEAD** mode in "Settings → Plugins → Install/Update Strategy".

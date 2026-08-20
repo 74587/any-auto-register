@@ -48,16 +48,12 @@
 根据当前前端代码与界面，**左侧“平台管理”菜单默认显示的平台**为：
 
 - ChatGPT
-- Grok
-- Kiro (AWS Builder ID)
-- OpenBlockLabs
-- Trae.ai
-
-
+- iCloud（Hide My Email 隐私邮箱）
 
 ## 功能特性
 
 - **多平台账号注册与管理**：统一的账号列表、详情、导入、导出、删除、批量操作
+- **iCloud 隐私邮箱**：Apple ID 主号登录（SRP + 双重认证 / Cookie 导入）、Hide My Email 批量生成与收件箱查看
 - **多执行器模式**：纯协议、无头浏览器、有头浏览器
 - **多邮箱服务接入**：支持内置、第三方、自建 Worker 邮箱等多种方案
 - **验证码支持**：YesCaptcha、本地 Turnstile Solver（Camoufox）
@@ -162,14 +158,17 @@
 | Laoudo | `laoudo` | 固定邮箱方案 |
 | CF Worker | `cfworker` | Cloudflare Worker 自建邮箱 |
 
-### Kiro 邮箱说明
+### iCloud 隐私邮箱说明
 
-Kiro 当前风控较严格，邮箱方案会显著影响成功率。当前项目内也保留了这条重点提示：
+iCloud 平台不消耗上表中的临时邮箱池，而是使用 Apple 自带的 Hide My Email 地址：
 
-- **自建邮箱成功率：100%**
-- **项目内置临时邮箱成功率：0%**
+1. 在「iCloud 隐私邮箱 → 主号管理」中添加 Apple ID 主号，支持两种方式：
+   - **账号密码登录**：走 Apple SRP 协议，按需完成双重认证（可信设备推送或短信验证码）；
+   - **Cookie 导入**：直接粘贴浏览器导出的 iCloud Cookie。
+2. 登录成功后在「隐私邮箱」标签页批量生成别名，Apple 侧限制为**每小时最多 5 个**，系统会按主号维度自行限流。
+3. 主号的 IMAP 密码（应用专用密码）用于拉取别名收件箱，凭据均以 AES-256-GCM 加密后落库。
 
-因此进行 **Kiro (AWS Builder ID)** 注册时，建议优先使用**自建邮箱**。
+加密密钥取自环境变量 `CREDENTIAL_ENCRYPTION_KEY`；未设置时会在 `.secrets/credential_key` 自动生成一份本地密钥。
 
 ## 快速开始
 
@@ -408,7 +407,7 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 ### Docker 使用建议
 
 - 当前 Docker 镜像主要覆盖主应用和本地 Turnstile Solver
-- `grok2api`、`CLIProxyAPI`、`Kiro Account Manager` 的自动安装/拉起逻辑仍偏向宿主机环境
+- `CLIProxyAPI` 的自动安装/拉起逻辑仍偏向宿主机环境
 - 若依赖 `conda`、Go 或 Windows 可执行文件，不建议直接在当前 Linux 容器中启动这些插件
 - 如果你只需要 Web UI、账号管理、任务调度和本地 Solver，当前 Compose 配置可直接使用
 
@@ -427,8 +426,6 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 | 项目 | 用途 | Git 地址 |
 | --- | --- | --- |
 | CLIProxyAPI | CPA / 代理池管理服务 | `https://github.com/router-for-me/CLIProxyAPI.git` |
-| grok2api | Grok token 管理、回填、聊天/API 服务 | `https://github.com/chenyme/grok2api.git` |
-| kiro-account-manager | Kiro 账号管理相关插件 | `https://github.com/hj01857655/kiro-account-manager.git` |
 
 插件页中的 **“安装最新版 / 更新到最新版”** 会同步仓库最新代码，且已支持 **卸载**（会先停止服务，再删除本地插件目录）。
 默认按 **最新 semver tag** 更新；你也可以在“设置 → 插件 → 安装/更新策略”切回 **分支 HEAD** 模式。
