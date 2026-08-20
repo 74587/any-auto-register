@@ -357,12 +357,17 @@ services/turnstile_solver/solver.log
 
 ## Docker 部署
 
-仓库根目录已提供：
+仓库根目录已提供两套：
 
-- `Dockerfile`
-- `docker-compose.yml`
+| 用途 | 文件 | 镜像体积 | 说明 |
+| --- | --- | --- | --- |
+| 完整版（含浏览器） | `Dockerfile` + `docker-compose.yml` | 约 5GB | 带 Playwright / Camoufox / Turnstile Solver |
+| 无头服务器 | `Dockerfile.server` + `docker-compose.server.yml` | 约 1.1GB | 只跑 Web UI 与 ChatGPT/iCloud 注册，不装浏览器栈 |
 
-默认部署内容包括：
+ChatGPT 切到纯协议后两个平台都不用浏览器，服务器部署推荐用无头版，详见
+[docs/SERVER_DEPLOY.md](docs/SERVER_DEPLOY.md)（含反向代理配置和**必须先设登录密码**的说明）。
+
+以下是完整版的部署内容：
 
 - FastAPI 后端
 - 已构建的前端静态资源
