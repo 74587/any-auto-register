@@ -9,6 +9,8 @@ export interface PlatformMeta {
   executors: ExecutorType[]
   /** 该平台的“注册”是否消耗外部邮箱池。iCloud 自带隐私邮箱，无需临时邮箱。 */
   usesMailbox: boolean
+  /** 注册流程是否会遇到人机验证。iCloud 走 Apple 私有协议，不需要打码服务。 */
+  usesCaptcha: boolean
 }
 
 export const EXECUTOR_LABELS: Record<ExecutorType, string> = {
@@ -24,6 +26,7 @@ export const PLATFORMS: Record<PlatformName, PlatformMeta> = {
     color: '#3b82f6',
     executors: ['protocol', 'headless', 'headed'],
     usesMailbox: true,
+    usesCaptcha: true,
   },
   icloud: {
     name: 'icloud',
@@ -31,6 +34,7 @@ export const PLATFORMS: Record<PlatformName, PlatformMeta> = {
     color: '#0ea5e9',
     executors: ['protocol'],
     usesMailbox: false,
+    usesCaptcha: false,
   },
 }
 

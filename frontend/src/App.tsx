@@ -11,9 +11,8 @@ import {
   MoonOutlined,
   LogoutOutlined,
   PlayCircleOutlined,
-  CloudOutlined,
 } from '@ant-design/icons'
-import zhCN from 'antd/locale/zh_CN'
+import zhCN from 'antd/es/locale/zh_CN'
 import Dashboard from '@/pages/Dashboard'
 import Accounts from '@/pages/Accounts'
 import ICloudPage from '@/pages/ICloud'
@@ -116,17 +115,11 @@ function AppContent() {
       key: '/accounts',
       icon: <UserOutlined />,
       label: '平台管理',
-      children: [
-        ...platforms.map(p => ({
-          key: `/accounts/${p.key}`,
-          label: p.label,
-        })),
-      ],
-    },
-    {
-      key: '/icloud',
-      icon: <CloudOutlined />,
-      label: 'iCloud 隐私邮箱',
+      children: platforms.map(p => ({
+        // iCloud 有主号 + 隐私邮箱的专属控制台，不走通用账号列表。
+        key: p.key === 'icloud' ? '/icloud' : `/accounts/${p.key}`,
+        label: p.label,
+      })),
     },
     {
       key: '/history',

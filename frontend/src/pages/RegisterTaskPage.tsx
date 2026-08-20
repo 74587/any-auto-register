@@ -235,7 +235,9 @@ export default function RegisterTaskPage() {
   const captchaSolver = Form.useWatch('captcha_solver', form)
   const platform = Form.useWatch('platform', form)
   const executorOptions = getExecutorOptions(platform)
-  const usesMailbox = getPlatformMeta(platform)?.usesMailbox ?? true
+  const platformMeta = getPlatformMeta(platform)
+  const usesMailbox = platformMeta?.usesMailbox ?? true
+  const usesCaptcha = platformMeta?.usesCaptcha ?? true
 
   useEffect(() => {
     const currentExecutor = form.getFieldValue('executor_type')
@@ -278,7 +280,12 @@ export default function RegisterTaskPage() {
           <Form.Item name="executor_type" label="执行器" rules={[{ required: true }]}>
             <Select options={executorOptions} />
           </Form.Item>
-          <Form.Item name="captcha_solver" label="验证码" rules={[{ required: true }]}>
+          <Form.Item
+            name="captcha_solver"
+            label="验证码"
+            rules={[{ required: true }]}
+            hidden={!usesCaptcha}
+          >
             <Select
               options={[
                 { value: 'yescaptcha', label: 'YesCaptcha' },
@@ -316,7 +323,7 @@ export default function RegisterTaskPage() {
         {!usesMailbox && (
           <Card title="iCloud 隐私邮箱配置" style={{ marginBottom: 16 }}>
             <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              批量生成 Hide My Email 地址。请先在“iCloud 主号”页面完成 Apple ID 登录，
+              批量生成 Hide My Email 地址。请先在“平台管理 → iCloud 隐私邮箱”完成 Apple ID 登录，
               Apple 对每个主号限制每滚动小时最多成功生成 5 个地址。
             </Text>
             <Form.Item
@@ -626,7 +633,7 @@ export default function RegisterTaskPage() {
           </Card>
         )}
 
-        {captchaSolver === 'yescaptcha' && (
+        {usesCaptcha && captchaSolver === 'yescaptcha' && (
           <Card title="验证码配置" style={{ marginBottom: 16 }}>
             <Form.Item name="yescaptcha_key" label="YesCaptcha Key">
               <Input />

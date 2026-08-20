@@ -15,6 +15,7 @@ import {
   CloudOutlined,
 } from '@ant-design/icons'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
+import { ICLOUD_REGION_OPTIONS } from '@/lib/icloud'
 import MailImportPanel from '@/components/settings/MailImportPanel'
 import { apiFetch } from '@/lib/utils'
 
@@ -49,6 +50,7 @@ const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
     { label: '无头浏览器', value: 'headless' },
     { label: '有头浏览器', value: 'headed' },
   ],
+  icloud_region: ICLOUD_REGION_OPTIONS,
   default_captcha_solver: [
     { label: 'YesCaptcha', value: 'yescaptcha' },
     { label: '本地 Solver (Camoufox)', value: 'local_solver' },
@@ -351,7 +353,7 @@ const TAB_ITEMS = [
             label: '默认主号 Apple ID',
             placeholder: '留空则使用第一个已启用的主号',
           },
-          { key: 'icloud_region', label: '区域', placeholder: 'global 或 china' },
+          { key: 'icloud_region', label: '区域' },
           { key: 'icloud_alias_label', label: '别名标签', placeholder: 'any-auto-register' },
           { key: 'icloud_alias_note', label: '别名备注', placeholder: '自动注册生成' },
         ],

@@ -330,6 +330,17 @@ export default function ICloudPage() {
                   columns={aliasColumns}
                   dataSource={aliases}
                   pagination={{ pageSize: 20, showSizeChanger: false }}
+                  locale={{
+                    emptyText: (
+                      <Empty
+                        description={
+                          accounts.length === 0
+                            ? '请先添加 iCloud 主号'
+                            : '还没有隐私邮箱，点击“生成隐私邮箱”开始'
+                        }
+                      />
+                    ),
+                  }}
                 />
               </Card>
             ),
