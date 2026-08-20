@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from core.config_store import config_store
 from services.mail_imports import MailImportExecuteRequest, MailImportSnapshotRequest, mail_import_registry
+from services.sms_service import SMS_DEFAULT_COUNTRY, SMS_DEFAULT_SERVICE
 
 router = APIRouter(prefix="/config", tags=["config"])
 
@@ -96,6 +97,22 @@ CONFIG_KEYS = [
     "icloud_alias_label",
     "icloud_alias_note",
     "icloud_account_email",
+    "sms_enabled",
+    "sms_provider",
+    "sms_api_key",
+    "sms_service",
+    "sms_country",
+    "sms_auto_country",
+    "sms_allowed_countries",
+    "sms_auto_min_stock",
+    "sms_auto_max_price",
+    "sms_max_price",
+    "sms_fixed_price",
+    "sms_reuse_phone",
+    "sms_phone_success_max",
+    "sms_per_phone_timeout",
+    "sms_max_phone_attempts",
+    "sms_code_retries_per_phone",
     "external_apps_update_mode",
     "contribution_enabled",
     "contribution_server_url",
@@ -150,6 +167,14 @@ def get_config():
         all_cfg["email_domain_rule_enabled"] = "0"
     if not str(all_cfg.get("email_domain_level_count", "") or "").strip():
         all_cfg["email_domain_level_count"] = "2"
+    if not str(all_cfg.get("sms_enabled", "") or "").strip():
+        all_cfg["sms_enabled"] = "0"
+    if not all_cfg.get("sms_provider"):
+        all_cfg["sms_provider"] = "smsbower"
+    if not all_cfg.get("sms_service"):
+        all_cfg["sms_service"] = SMS_DEFAULT_SERVICE
+    if not all_cfg.get("sms_country"):
+        all_cfg["sms_country"] = SMS_DEFAULT_COUNTRY
     # 只返回已知 key，未设置的返回空字符串
     return {k: all_cfg.get(k, "") for k in CONFIG_KEYS}
 

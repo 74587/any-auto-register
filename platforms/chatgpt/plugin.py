@@ -1,8 +1,5 @@
 """ChatGPT / Codex CLI 平台插件"""
 
-import random
-import string
-
 from core.base_mailbox import BaseMailbox
 from core.base_platform import Account, BasePlatform, RegisterConfig
 from core.registry import register
@@ -10,6 +7,7 @@ from platforms.chatgpt.chatgpt_registration_mode_adapter import (
     ChatGPTRegistrationContext,
     build_chatgpt_registration_mode_adapter,
 )
+from platforms.chatgpt.registration_engine import generate_password
 
 
 @register
@@ -40,159 +38,33 @@ class ChatGPTPlatform(BasePlatform):
 
     def register(self, email: str = None, password: str = None) -> Account:
         if not password:
-            password = "".join(random.choices(string.ascii_letters + string.digits + "!@#$", k=16))
+            password = generate_password()
 
         proxy = self.config.proxy if self.config else None
-        browser_mode = (self.config.executor_type if self.config else None) or "protocol"
         extra_config = (self.config.extra or {}) if self.config and getattr(self.config, "extra", None) else {}
         log_fn = getattr(self, "_log_fn", print)
-        max_retries = 3
-        try:
-            max_retries = int(extra_config.get("register_max_retries", 3) or 3)
-        except Exception:
-            max_retries = 3
 
-        def _resolve_mailbox_timeout(requested_timeout: int) -> int:
-            candidates = (
-                extra_config.get("mailbox_otp_timeout_seconds"),
-                extra_config.get("email_otp_timeout_seconds"),
-                extra_config.get("otp_timeout"),
-                requested_timeout,
-            )
-            for value in candidates:
-                if value in (None, ""):
-                    continue
-                try:
-                    seconds = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if seconds > 0:
-                    return seconds
-            return requested_timeout
-
-        if self.mailbox:
-            _mailbox = self.mailbox
-            _fixed_email = email
-
-            def _resolve_email(candidate_email: str = "") -> str:
-                resolved_email = str(_fixed_email or candidate_email or "").strip()
-                if not resolved_email:
-                    raise RuntimeError("custom_provider 返回空邮箱地址")
-                return resolved_email
-
-            class GenericEmailService:
-                service_type = type("ST", (), {"value": "custom_provider"})()
-
-                def __init__(self):
-                    self._acct = None
-                    self._email = _fixed_email
-                    self._before_ids = set()
-
-                def create_email(self, config=None):
-                    if self._email and self._acct and _fixed_email:
-                        return {"email": self._email, "service_id": self._acct.account_id, "token": ""}
-                    self._acct = _mailbox.get_email()
-                    get_current_ids = getattr(_mailbox, "get_current_ids", None)
-                    if callable(get_current_ids):
-                        self._before_ids = set(get_current_ids(self._acct) or [])
-                    else:
-                        self._before_ids = set()
-                    generated_email = getattr(self._acct, "email", "")
-                    if not self._email:
-                        self._email = _resolve_email(generated_email)
-                    elif not _fixed_email:
-                        self._email = _resolve_email(generated_email)
-                    return {"email": self._email, "service_id": self._acct.account_id, "token": ""}
-
-                def get_verification_code(
-                    self,
-                    email=None,
-                    email_id=None,
-                    timeout=120,
-                    pattern=None,
-                    otp_sent_at=None,
-                    exclude_codes=None,
-                ):
-                    if not self._acct:
-                        raise RuntimeError("邮箱账户尚未创建，无法获取验证码")
-                    return _mailbox.wait_for_code(
-                        self._acct,
-                        keyword="",
-                        timeout=_resolve_mailbox_timeout(timeout),
-                        before_ids=self._before_ids,
-                        otp_sent_at=otp_sent_at,
-                        exclude_codes=exclude_codes,
-                    )
-
-                def update_status(self, success, error=None):
-                    pass
-
-                @property
-                def status(self):
-                    return None
-
-            email_service = GenericEmailService()
-        else:
+        mailbox = self.mailbox
+        mailbox_kind = "mailbox"
+        if mailbox is None:
             from core.base_mailbox import TempMailLolMailbox
 
-            _tmail = TempMailLolMailbox(proxy=proxy)
-            _tmail._task_control = getattr(self, "_task_control", None)
-
-            class TempMailEmailService:
-                service_type = type("ST", (), {"value": "tempmail_lol"})()
-
-                def __init__(self):
-                    self._acct = None
-                    self._before_ids = set()
-
-                def create_email(self, config=None):
-                    acct = _tmail.get_email()
-                    self._acct = acct
-                    self._before_ids = set(_tmail.get_current_ids(acct) or [])
-                    resolved_email = str(getattr(acct, "email", "") or "").strip()
-                    if not resolved_email:
-                        raise RuntimeError("tempmail_lol 返回空邮箱地址")
-                    return {"email": resolved_email, "service_id": acct.account_id, "token": acct.account_id}
-
-                def get_verification_code(
-                    self,
-                    email=None,
-                    email_id=None,
-                    timeout=120,
-                    pattern=None,
-                    otp_sent_at=None,
-                    exclude_codes=None,
-                ):
-                    return _tmail.wait_for_code(
-                        self._acct,
-                        keyword="",
-                        timeout=_resolve_mailbox_timeout(timeout),
-                        before_ids=self._before_ids,
-                        otp_sent_at=otp_sent_at,
-                        exclude_codes=exclude_codes,
-                    )
-
-                def update_status(self, success, error=None):
-                    pass
-
-                @property
-                def status(self):
-                    return None
-
-            email_service = TempMailEmailService()
+            mailbox = TempMailLolMailbox(proxy=proxy)
+            mailbox._task_control = getattr(self, "_task_control", None)
+            mailbox_kind = "tempmail_lol"
 
         adapter = build_chatgpt_registration_mode_adapter(extra_config)
-        context = ChatGPTRegistrationContext(
-            email_service=email_service,
-            proxy_url=proxy,
-            callback_logger=log_fn,
-            email=email,
-            password=password,
-            browser_mode=browser_mode,
-            max_retries=max_retries,
-            extra_config=extra_config,
+        result = adapter.run(
+            ChatGPTRegistrationContext(
+                mailbox=mailbox,
+                proxy_url=proxy,
+                callback_logger=log_fn,
+                email=email,
+                password=password,
+                extra_config=extra_config,
+                mailbox_kind=mailbox_kind,
+            )
         )
-        result = adapter.run(context)
         if not result or not result.success:
             raise RuntimeError(result.error_message if result else "注册失败")
 
