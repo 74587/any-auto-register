@@ -53,7 +53,7 @@ class _FakePlatform(BasePlatform):
         return True
 
 
-class _FakeChatGPTWorkspacePlatform(BasePlatform):
+class _FakeChatGPTPlatform(BasePlatform):
     name = "chatgpt"
     display_name = "ChatGPT"
 
@@ -127,14 +127,14 @@ class RegisterTaskControlFlowTests(unittest.TestCase):
         self.assertEqual(snapshot["skipped"], 0)
         self.assertEqual(snapshot["errors"], [])
 
-    def test_chatgpt_logs_workspace_progress_after_each_success(self):
-        task_id = "task-chatgpt-workspace-progress"
+    def test_successful_run_logs_progress_for_each_account(self):
+        task_id = "task-control-progress"
         req = self._build_request(platform="chatgpt", count=2, concurrency=1)
         _create_task_record(task_id, req, "manual", None)
-        _FakeChatGPTWorkspacePlatform.reset_counter()
+        _FakeChatGPTPlatform.reset_counter()
 
         with (
-            patch("core.registry.get", return_value=_FakeChatGPTWorkspacePlatform),
+            patch("core.registry.get", return_value=_FakeChatGPTPlatform),
             patch("core.base_mailbox.create_mailbox", return_value=_FakeMailbox()),
             patch("core.db.save_account", side_effect=lambda account: account),
             patch("api.tasks._save_task_log"),
@@ -144,8 +144,11 @@ class RegisterTaskControlFlowTests(unittest.TestCase):
         snapshot = _task_store.snapshot(task_id)
         joined_logs = "\n".join(snapshot["logs"])
 
-        self.assertIn("workspace进度: 1/2", joined_logs)
-        self.assertIn("workspace进度: 2/2", joined_logs)
+        self.assertEqual(snapshot["status"], "done")
+        self.assertEqual(snapshot["success"], 2)
+        self.assertIn("开始注册第 1/2 个账号", joined_logs)
+        self.assertIn("注册成功: user1@example.com", joined_logs)
+        self.assertIn("注册成功: user2@example.com", joined_logs)
 
 
 if __name__ == "__main__":
