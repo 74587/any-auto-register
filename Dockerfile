@@ -35,8 +35,10 @@ WORKDIR /app
 COPY requirements.txt ./
 COPY scripts/install_camoufox.py /tmp/install_camoufox.py
 
+# nodejs 不是构建期依赖：ChatGPT 的 Sentinel PoW 求解器要在运行时起 node 子进程
+# 跑 OpenAI 的 sdk.js，缺它注册链路会静默收不到验证码。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates \
+        curl ca-certificates nodejs \
         libgtk-3-0 libx11-xcb1 libasound2 xvfb xauth \
     && curl -fsSL https://go.dev/dl/go1.24.2.linux-amd64.tar.gz | tar -C /usr/local -xz \
     && curl -LsSf https://astral.sh/uv/install.sh | sh \
@@ -65,7 +67,7 @@ COPY --from=frontend-builder /app/static /app/static
 RUN apt-get update && apt-get install -y --no-install-recommends dos2unix git iproute2 procps \
     && dos2unix /app/docker/entrypoint.sh \
     && chmod +x /app/docker/entrypoint.sh \
-    && mkdir -p /runtime /runtime/logs /runtime/smstome_used /_ext_targets \
+    && mkdir -p /runtime /runtime/logs /_ext_targets \
     && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 8000 8889

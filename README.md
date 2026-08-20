@@ -48,19 +48,16 @@
 根据当前前端代码与界面，**左侧“平台管理”菜单默认显示的平台**为：
 
 - ChatGPT
-- Grok
-- Kiro (AWS Builder ID)
-- OpenBlockLabs
-- Trae.ai
-
-
+- iCloud（Hide My Email 隐私邮箱）
 
 ## 功能特性
 
 - **多平台账号注册与管理**：统一的账号列表、详情、导入、导出、删除、批量操作
+- **iCloud 隐私邮箱**：Apple ID 主号登录（SRP + 双重认证 / Cookie 导入）、Hide My Email 批量生成与收件箱查看
 - **多执行器模式**：纯协议、无头浏览器、有头浏览器
 - **多邮箱服务接入**：支持内置、第三方、自建 Worker 邮箱等多种方案
 - **验证码支持**：YesCaptcha、本地 Turnstile Solver（Camoufox）
+- **手机接码**：SmsBower / HeroSMS 自动租号收码，ChatGPT 命中 add-phone 时全程无人值守
 - **代理能力**：代理池轮询、代理状态维护、注册过程代理接入
 - **批量注册**：支持注册数量、并发数、每个账号启动延迟设置
 - **实时日志**：前端实时查看注册日志
@@ -102,11 +99,12 @@
 | 前端 | React + TypeScript + Vite |
 | HTTP | curl_cffi |
 | 浏览器自动化 | Playwright / Camoufox |
+| ChatGPT 注册协议 | [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register)（纯协议，Sentinel PoW 走 Node 沙箱） |
 
 ## 环境要求
 
 - Python 3.12+
-- Node.js 18+
+- Node.js 18+（既用于构建前端，也是 ChatGPT Sentinel PoW 求解器的运行时，**注册时必须可执行**）
 - Conda（推荐）
 - Windows（推荐直接使用仓库内启动脚本）
 
@@ -114,15 +112,27 @@
 
 当前版本里，**ChatGPT 是功能最完整的平台之一**，不仅支持注册，还支持 Token 生命周期管理、状态探测和外部系统同步。
 
-### 1. ChatGPT Token 方案切换
+### 1. 注册协议
+
+ChatGPT 的整条注册链路移植自 [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register)，代码位于 `platforms/chatgpt/protocol/`，是**纯协议实现，不需要浏览器**：
+
+- `http_client.py` —— 基于 `curl_cffi` 的 TLS 指纹会话
+- `auth_flow.py` —— 驱动 OpenAI authorize 状态机（注册、OTP、add-phone、Codex OAuth）
+- `sentinel_quickjs.py` + `openai_sentinel_quickjs.js` —— 在 Node 沙箱里跑 OpenAI 真实的 `sdk.js` 求解 Sentinel PoW
+
+> ⚠️ **Sentinel 需要 Node 运行时。** 自己合成的 PoW token 能骗过 `/sentinel/req` 的表层校验，但发码服务会在服务端复核，结果是验证码邮件被静默丢弃——链路看着一切正常却永远收不到码。所以必须有可执行的 `node`（>= 18），如果不在 `PATH` 里可用 `OPENAI_SENTINEL_NODE_PATH` 指定绝对路径。
+
+本仓库在协议层之上只接了三个注入点，不改协议本身：邮箱池适配器（`protocol/mailbox_adapter.py`）、手机接码控制器（`services/sms_service.py`）、密码生效回调。任务级配置通过实例参数下传，**不写进程环境变量**，因此多个注册任务并发时互不干扰。
+
+### 2. ChatGPT Token 方案切换
 
 前端当前提供两种 ChatGPT 注册模式：
 
 - **有 RT**（默认推荐）
-  - 走新 PR 链路
+  - 完整跑一遍 Codex OAuth
   - 产出 **Access Token + Refresh Token**
-- **无 RT**（兼容旧方案）
-  - 走旧链路
+- **无 RT**
+  - 跳过 Codex OAuth（每次省约 10 秒）
   - 仅产出 **Access Token / Session**
   - 依赖 RT 的后续能力可能不可用
 
@@ -131,7 +141,26 @@
 - 注册任务页
 - ChatGPT 平台注册弹窗
 
+### 3. 手机接码（add-phone）
 
+OpenAI 会对部分注册请求要求绑定手机号。命中 add-phone 时，系统会自动租号、等短信、提交验证码，全程无人值守。在「设置 → 手机接码」里配置：
+
+| 配置项 | 说明 |
+| --- | --- |
+| 启用手机接码 | 关闭时命中 add-phone 会回退到手工号码路径（`OPENAI_PHONE_NUMBER`） |
+| 接码平台 | SmsBower / HeroSMS，两家共用 sms-activate 的 `handler_api.php` 协议 |
+| API Key | 平台密钥，可用页面上的「测试余额」直接自检 |
+| 服务代码 | 平台按服务码分库存，OpenAI 对应 `dr` |
+| 默认国家 ID | 默认 `52`（泰国） |
+| 自动选最优国家 | 按价格升序 + 库存挑号；也可用「允许的国家」限定候选范围 |
+| 复用同一号码 | 在号码 20 分钟租期内复用，直到达到单号成功次数上限 |
+| 单号等待秒数 / 最多换号次数 / 单号内验证重试次数 | 收码失败时的重试策略 |
+
+「查询国家排名」会列出该服务码下各国的价格与库存，绿色标签是 OpenAI 走纯短信的国家。
+
+> ⚠️ OpenAI 自 2025 年起对大部分国家改用 WhatsApp 验证，纯 SMS 路径实测只有**泰国（country_id=52）**稳定可用。选其它国家可能抽到 WhatsApp 号从而收不到短信，自动选号时会打告警但不阻止。
+
+国家 ID、单号等待秒数、最多换号次数还可以在注册任务页按任务覆盖，平台与 API Key 只在全局配置里维护。
 
 ### 4. ChatGPT 批量状态同步与补传
 
@@ -162,14 +191,17 @@
 | Laoudo | `laoudo` | 固定邮箱方案 |
 | CF Worker | `cfworker` | Cloudflare Worker 自建邮箱 |
 
-### Kiro 邮箱说明
+### iCloud 隐私邮箱说明
 
-Kiro 当前风控较严格，邮箱方案会显著影响成功率。当前项目内也保留了这条重点提示：
+iCloud 平台不消耗上表中的临时邮箱池，而是使用 Apple 自带的 Hide My Email 地址：
 
-- **自建邮箱成功率：100%**
-- **项目内置临时邮箱成功率：0%**
+1. 在「iCloud 隐私邮箱 → 主号管理」中添加 Apple ID 主号，支持两种方式：
+   - **账号密码登录**：走 Apple SRP 协议，按需完成双重认证（可信设备推送或短信验证码）；
+   - **Cookie 导入**：直接粘贴浏览器导出的 iCloud Cookie。
+2. 登录成功后在「隐私邮箱」标签页批量生成别名，Apple 侧限制为**每小时最多 5 个**，系统会按主号维度自行限流。
+3. 主号的 IMAP 密码（应用专用密码）用于拉取别名收件箱，凭据均以 AES-256-GCM 加密后落库。
 
-因此进行 **Kiro (AWS Builder ID)** 注册时，建议优先使用**自建邮箱**。
+加密密钥取自环境变量 `CREDENTIAL_ENCRYPTION_KEY`；未设置时会在 `.secrets/credential_key` 自动生成一份本地密钥。
 
 ## 快速开始
 
@@ -394,8 +426,9 @@ DATABASE_URL=sqlite:////app/data/account_manager.db
 | `APP_ENABLE_SOLVER` | `1` | 是否自动启动本地 Solver，设为 `0` 可禁用 |
 | `SOLVER_PORT` | `8889` | Solver 监听端口 |
 | `LOCAL_SOLVER_URL` | `http://127.0.0.1:8889` | 后端访问 Solver 的地址 |
+| `OPENAI_SENTINEL_NODE_PATH` | `node` | Sentinel PoW 求解器使用的 Node 可执行文件，`node` 不在 `PATH` 时填绝对路径 |
 
-如需传入 `SMSTOME_COOKIE`、`OPENAI_*` 等配置，可直接写入仓库根目录 `.env` 文件，`docker compose` 会自动注入到容器环境中。
+如需传入 `OPENAI_*` 等配置，可直接写入仓库根目录 `.env` 文件，`docker compose` 会自动注入到容器环境中。
 
 ### Camoufox 构建参数
 
@@ -408,11 +441,17 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 ### Docker 使用建议
 
 - 当前 Docker 镜像主要覆盖主应用和本地 Turnstile Solver
-- `grok2api`、`CLIProxyAPI`、`Kiro Account Manager` 的自动安装/拉起逻辑仍偏向宿主机环境
+- `CLIProxyAPI` 的自动安装/拉起逻辑仍偏向宿主机环境
 - 若依赖 `conda`、Go 或 Windows 可执行文件，不建议直接在当前 Linux 容器中启动这些插件
 - 如果你只需要 Web UI、账号管理、任务调度和本地 Solver，当前 Compose 配置可直接使用
 
 ## 插件与外部依赖
+
+### ChatGPT 注册协议来源
+
+`platforms/chatgpt/protocol/` 下的协议栈与 `services/sms_service.py` 的接码实现移植自：
+
+- <https://github.com/Regert888/gpt-auto-register>
 
 ### 临时邮箱方案来源
 
@@ -427,8 +466,6 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 | 项目 | 用途 | Git 地址 |
 | --- | --- | --- |
 | CLIProxyAPI | CPA / 代理池管理服务 | `https://github.com/router-for-me/CLIProxyAPI.git` |
-| grok2api | Grok token 管理、回填、聊天/API 服务 | `https://github.com/chenyme/grok2api.git` |
-| kiro-account-manager | Kiro 账号管理相关插件 | `https://github.com/hj01857655/kiro-account-manager.git` |
 
 插件页中的 **“安装最新版 / 更新到最新版”** 会同步仓库最新代码，且已支持 **卸载**（会先停止服务，再删除本地插件目录）。
 默认按 **最新 semver tag** 更新；你也可以在“设置 → 插件 → 安装/更新策略”切回 **分支 HEAD** 模式。
@@ -507,6 +544,16 @@ http://localhost:8889/
 ```powershell
 .\start_backend.ps1
 ```
+
+### 6. ChatGPT 注册收不到验证码
+
+先确认 `node` 可执行：
+
+```bash
+node --version
+```
+
+Sentinel PoW 求解器要在 Node 沙箱里跑 OpenAI 的 `sdk.js`，没有 Node 时算出来的 token 过不了服务端复核，**验证码邮件会被静默丢弃**——日志上看不到明显报错，但码永远收不到。若 `node` 不在 `PATH` 里，用 `OPENAI_SENTINEL_NODE_PATH` 指定绝对路径。
 
 ## 项目结构
 

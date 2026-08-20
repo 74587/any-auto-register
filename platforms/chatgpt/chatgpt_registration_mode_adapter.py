@@ -1,16 +1,31 @@
-"""ChatGPT 注册模式适配器。"""
+"""ChatGPT 注册模式适配器。
+
+两种模式跑的是同一条协议链，区别只在要不要 Codex OAuth 那一段：
+``refresh_token`` 模式会额外走一次独立 authorize 链换 refresh_token，
+``access_token_only`` 模式直接跳过（省约 10 秒且不产生必然失败的告警）。
+"""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from core.base_mailbox import BaseMailbox
 from core.base_platform import Account, AccountStatus
+from platforms.chatgpt.registration_engine import (
+    REGISTRATION_MODE_ACCESS_TOKEN_ONLY,
+    REGISTRATION_MODE_REFRESH_TOKEN,
+    ChatGPTRegistrationEngine,
+    RegistrationResult,
+)
 
-CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN = "refresh_token"
-CHATGPT_REGISTRATION_MODE_ACCESS_TOKEN_ONLY = "access_token_only"
+CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN = REGISTRATION_MODE_REFRESH_TOKEN
+CHATGPT_REGISTRATION_MODE_ACCESS_TOKEN_ONLY = REGISTRATION_MODE_ACCESS_TOKEN_ONLY
 DEFAULT_CHATGPT_REGISTRATION_MODE = CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN
+
+# 邮箱链路失效的特征串，命中就换下一个邮箱重试而不是把整轮判死
+_MAILBOX_ERROR_MARKERS = ("service_abuse_mode", "oauth_token_failed", "imap")
+_MAX_ATTEMPTS = 3
 
 
 def normalize_chatgpt_registration_mode(value) -> str:
@@ -53,107 +68,75 @@ def resolve_chatgpt_registration_mode(extra: Optional[dict]) -> str:
 
 @dataclass(frozen=True)
 class ChatGPTRegistrationContext:
-    email_service: object
+    mailbox: BaseMailbox
     proxy_url: Optional[str]
     callback_logger: Callable[[str], None]
     email: Optional[str]
     password: Optional[str]
-    browser_mode: str
-    max_retries: int
     extra_config: dict
+    mailbox_kind: str = "mailbox"
 
 
-class BaseChatGPTRegistrationModeAdapter(ABC):
-    mode: str
+class ChatGPTRegistrationModeAdapter:
+    """按模式跑注册引擎，并把结果转成平台层的 ``Account``。"""
 
-    @abstractmethod
-    def _create_engine(self, context: ChatGPTRegistrationContext):
-        """按模式构造底层注册引擎。"""
+    def __init__(self, mode: str):
+        self.mode = mode
 
-    def run(self, context: ChatGPTRegistrationContext):
-        _MAILBOX_ERROR_MARKERS = ("service_abuse_mode", "oauth_token_failed")
-        _MAX_ATTEMPTS = 3
-        result = None
-        for _attempt in range(_MAX_ATTEMPTS):
-            engine = self._create_engine(context)
-            if context.email is not None:
-                engine.email = context.email
-            if context.password is not None:
-                engine.password = context.password
+    def run(self, context: ChatGPTRegistrationContext) -> RegistrationResult:
+        result: Optional[RegistrationResult] = None
+        for attempt in range(_MAX_ATTEMPTS):
+            engine = ChatGPTRegistrationEngine(
+                mailbox=context.mailbox,
+                mode=self.mode,
+                proxy=context.proxy_url,
+                email=context.email or "",
+                password=context.password or "",
+                extra_config=context.extra_config,
+                log_fn=context.callback_logger,
+                mailbox_kind=context.mailbox_kind,
+            )
             result = engine.run()
             if result.success:
                 return result
-            err = str(getattr(result, "error_message", "") or "")
-            matched_marker = next((m for m in _MAILBOX_ERROR_MARKERS if m in err), None)
-            if matched_marker and _attempt < _MAX_ATTEMPTS - 1:
-                context.callback_logger(
-                    f"邮箱 OAuth token 已失效（{matched_marker}），"
-                    f"换用下一个邮箱重试 ({_attempt + 1}/{_MAX_ATTEMPTS - 1})..."
-                )
-                continue
-            break
+
+            error = str(result.error_message or "").lower()
+            marker = next((m for m in _MAILBOX_ERROR_MARKERS if m in error), None)
+            if marker is None or attempt >= _MAX_ATTEMPTS - 1:
+                break
+            context.callback_logger(
+                f"邮箱链路失效（{marker}），换用下一个邮箱重试 "
+                f"({attempt + 1}/{_MAX_ATTEMPTS - 1})…"
+            )
         return result
 
-    def build_account(self, result, fallback_password: str) -> Account:
+    def build_account(self, result: RegistrationResult, fallback_password: str) -> Account:
         return Account(
             platform="chatgpt",
-            email=getattr(result, "email", ""),
-            password=getattr(result, "password", "") or fallback_password,
-            user_id=getattr(result, "account_id", ""),
-            token=getattr(result, "access_token", ""),
+            email=result.email,
+            password=result.password or fallback_password,
+            user_id=result.account_id,
+            token=result.access_token,
             status=AccountStatus.REGISTERED,
             extra=self._build_account_extra(result),
         )
 
-    def _build_account_extra(self, result) -> dict:
+    def _build_account_extra(self, result: RegistrationResult) -> dict:
         return {
-            "access_token": getattr(result, "access_token", ""),
-            "refresh_token": getattr(result, "refresh_token", ""),
-            "id_token": getattr(result, "id_token", ""),
-            "session_token": getattr(result, "session_token", ""),
-            "workspace_id": getattr(result, "workspace_id", ""),
+            "access_token": result.access_token,
+            "refresh_token": result.refresh_token,
+            "id_token": result.id_token,
+            "session_token": result.session_token,
+            "cookies": result.cookie_header,
+            "workspace_id": result.workspace_id,
             "chatgpt_registration_mode": self.mode,
             "chatgpt_has_refresh_token_solution": self.mode == CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN,
-            "chatgpt_token_source": getattr(result, "source", "register"),
+            "chatgpt_token_source": result.source,
+            **{k: v for k, v in (result.metadata or {}).items() if v not in (None, "", False)},
         }
-
-
-class RefreshTokenChatGPTRegistrationAdapter(BaseChatGPTRegistrationModeAdapter):
-    mode = CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN
-
-    def _create_engine(self, context: ChatGPTRegistrationContext):
-        from platforms.chatgpt.refresh_token_registration_engine import RefreshTokenRegistrationEngine
-
-        return RefreshTokenRegistrationEngine(
-            email_service=context.email_service,
-            proxy_url=context.proxy_url,
-            callback_logger=context.callback_logger,
-            browser_mode=context.browser_mode,
-            max_retries=context.max_retries,
-            extra_config=context.extra_config,
-        )
-
-
-class AccessTokenOnlyChatGPTRegistrationAdapter(BaseChatGPTRegistrationModeAdapter):
-    mode = CHATGPT_REGISTRATION_MODE_ACCESS_TOKEN_ONLY
-
-    def _create_engine(self, context: ChatGPTRegistrationContext):
-        from platforms.chatgpt.access_token_only_registration_engine import AccessTokenOnlyRegistrationEngine
-
-        return AccessTokenOnlyRegistrationEngine(
-            email_service=context.email_service,
-            proxy_url=context.proxy_url,
-            browser_mode=context.browser_mode,
-            callback_logger=context.callback_logger,
-            max_retries=context.max_retries,
-            extra_config=context.extra_config,
-        )
 
 
 def build_chatgpt_registration_mode_adapter(
     extra: Optional[dict],
-) -> BaseChatGPTRegistrationModeAdapter:
-    mode = resolve_chatgpt_registration_mode(extra)
-    if mode == CHATGPT_REGISTRATION_MODE_ACCESS_TOKEN_ONLY:
-        return AccessTokenOnlyChatGPTRegistrationAdapter()
-    return RefreshTokenChatGPTRegistrationAdapter()
+) -> ChatGPTRegistrationModeAdapter:
+    return ChatGPTRegistrationModeAdapter(resolve_chatgpt_registration_mode(extra))

@@ -36,7 +36,7 @@ import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatG
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
 import { buildChatGPTRegistrationRequestAdapter } from '@/lib/chatgptRegistrationRequestAdapter'
 import { apiFetch } from '@/lib/utils'
-import { normalizeExecutorForPlatform } from '@/lib/platformExecutorOptions'
+import { normalizeExecutorForPlatform } from '@/lib/platforms'
 
 const { Text } = Typography
 
@@ -641,55 +641,22 @@ export default function Accounts() {
       URL.revokeObjectURL(url)
     }
 
-    if (currentPlatform === 'kiro') {
-      const header = ['邮箱', '昵称', '登录方式', 'RefreshToken', 'ClientId', 'ClientSecret', 'Region']
-      const rows = accounts.map((a) => {
-        const nickname = a.extra?.name || String(a.email || '').split('@')[0] || ''
-        const provider = a.extra?.provider || 'BuilderId'
-        const refreshToken = a.extra?.refreshToken || ''
-        const clientId = a.extra?.clientId || ''
-        const clientSecret = a.extra?.clientSecret || ''
-        const region = a.extra?.region || 'us-east-1'
+    const header = [
+      'email',
+      'password',
+      'status',
+      'region',
+      'cashier_url',
+      'created_at',
+      'token',
+      'refresh_token',
+    ]
 
-        return [
-          a.email || '',
-          nickname,
-          provider,
-          refreshToken,
-          clientId,
-          clientSecret,
-          region,
-        ].map(quoteCsv).join(',')
-      })
-
-      downloadCsv([header.map(quoteCsv).join(','), ...rows].join('\r\n'))
-      return
-    }
-
-    const header = ['email', 'password', 'status', 'region', 'cashier_url', 'created_at']
-    if (currentPlatform === 'kiro') {
-      header.push('accessToken', 'refreshToken', 'clientId', 'clientSecret')
-    } else if (currentPlatform === 'chatgpt') {
-      header.push('token', 'refresh_token')
-    } else {
-      header.push('token')
-    }
-
-    const rows = accounts.map((a) => {
-      const baseRow = [a.email, a.password, a.status, a.region, a.cashier_url, a.created_at].map(quoteCsv)
-      if (currentPlatform === 'kiro') {
-        baseRow.push(quoteCsv(a.extra?.accessToken || a.extra?.webAccessToken || a.token))
-        baseRow.push(quoteCsv(a.extra?.refreshToken))
-        baseRow.push(quoteCsv(a.extra?.clientId))
-        baseRow.push(quoteCsv(a.extra?.clientSecret))
-      } else if (currentPlatform === 'chatgpt') {
-        baseRow.push(quoteCsv(a.token))
-        baseRow.push(quoteCsv(getRefreshToken(a)))
-      } else {
-        baseRow.push(quoteCsv(a.token))
-      }
-      return baseRow.join(',')
-    })
+    const rows = accounts.map((a) =>
+      [a.email, a.password, a.status, a.region, a.cashier_url, a.created_at, a.token, getRefreshToken(a)]
+        .map(quoteCsv)
+        .join(','),
+    )
 
     downloadCsv([header.map(quoteCsv).join(','), ...rows].join('\r\n'))
   }
@@ -795,12 +762,6 @@ export default function Accounts() {
         cfworker_random_subdomain: parseBooleanConfigValue(cfg.cfworker_random_subdomain),
         cfworker_random_name_subdomain: parseBooleanConfigValue(cfg.cfworker_random_name_subdomain),
         cfworker_fingerprint: cfg.cfworker_fingerprint,
-        smstome_cookie: cfg.smstome_cookie,
-        smstome_country_slugs: cfg.smstome_country_slugs,
-        smstome_phone_attempts: cfg.smstome_phone_attempts,
-        smstome_otp_timeout_seconds: cfg.smstome_otp_timeout_seconds,
-        smstome_poll_interval_seconds: cfg.smstome_poll_interval_seconds,
-        smstome_sync_max_pages_per_country: cfg.smstome_sync_max_pages_per_country,
         luckmail_base_url: cfg.luckmail_base_url,
         luckmail_api_key: cfg.luckmail_api_key,
         luckmail_email_type: cfg.luckmail_email_type,
@@ -1635,12 +1596,6 @@ export default function Accounts() {
                 </div>
               )
             })()}
-            {currentPlatform === 'kiro' && currentAccount?.extra ? (
-              <DetailSection title="Kiro 客户端信息">
-                <SummaryField label="Client ID" value={currentAccount.extra?.clientId} code />
-                <SummaryField label="Client Secret" value={currentAccount.extra?.clientSecret} code />
-              </DetailSection>
-            ) : null}
             {currentPlatform === 'chatgpt' ? (
               <DetailSection title="本地真实状态">
                 {currentAccount.chatgptLocal && Object.keys(currentAccount.chatgptLocal).length > 0 ? (

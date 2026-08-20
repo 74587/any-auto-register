@@ -46,6 +46,9 @@ static/
 # Docker 数据
 data/
 
+# 凭据加密密钥
+.secrets/
+
 # 环境变量
 .env
 .env.local

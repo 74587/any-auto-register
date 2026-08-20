@@ -2,153 +2,158 @@ import unittest
 from unittest import mock
 
 from core.base_mailbox import MailboxAccount
-from core.base_platform import RegisterConfig
+from core.base_platform import AccountStatus, RegisterConfig
 from platforms.chatgpt.plugin import ChatGPTPlatform
+from platforms.chatgpt.registration_engine import RegistrationResult
 
 
-class _BlankMailbox:
-    def get_email(self):
-        return MailboxAccount(email="", account_id="blank-mailbox")
-
-    def wait_for_code(self, *args, **kwargs):
-        return "123456"
-
-
-class _TrackingMailbox:
-    def __init__(self):
-        self.account = MailboxAccount(email="demo@example.com", account_id="tracked-mailbox")
-        self.wait_call = None
-        self.current_ids_calls = []
+class _StubMailbox:
+    def __init__(self, email="demo@example.com"):
+        self.account = MailboxAccount(email=email, account_id="stub-mailbox")
+        self.requeued = []
 
     def get_email(self):
         return self.account
 
-    def get_current_ids(self, account):
-        self.current_ids_calls.append(account)
-        return {"mid-1"}
-
     def wait_for_code(self, *args, **kwargs):
-        self.wait_call = (args, kwargs)
         return "123456"
-
-
-class _RequeueMailbox(_TrackingMailbox):
-    def __init__(self):
-        super().__init__()
-        self.requeued = []
 
     def requeue_account(self, account):
         self.requeued.append(account)
 
 
-class _FakeAdapter:
-    def run(self, context):
-        context.email_service.create_email()
-        raise AssertionError("create_email 应该先报错")
+class _RecordingAdapter:
+    """记录 plugin 传下来的注册上下文，并返回一个可控结果。"""
 
-
-class _VerificationAdapter:
-    def __init__(self):
-        self.run_called = False
-
-    def run(self, context):
-        self.run_called = True
-        context.email_service.create_email()
-        code = context.email_service.get_verification_code(
-            timeout=30,
-            otp_sent_at=123.0,
-            exclude_codes={"654321"},
+    def __init__(self, result=None):
+        self.context = None
+        self.build_account_args = None
+        self._result = result or RegistrationResult(
+            success=True,
+            email="demo@example.com",
+            password="pw-from-engine",
+            access_token="at-demo",
         )
-        self.last_code = code
-        return mock.Mock(success=True)
+
+    def run(self, context):
+        self.context = context
+        return self._result
 
     def build_account(self, result, fallback_password):
-        return {"success": True, "password": fallback_password}
-
-
-class _FailingAdapter:
-    def run(self, context):
-        context.email_service.create_email()
-        return mock.Mock(success=False, error_message="boom")
+        self.build_account_args = (result, fallback_password)
+        return "account-sentinel"
 
 
 class ChatGPTPluginTests(unittest.TestCase):
-    def test_custom_provider_rejects_blank_email(self):
-        platform = ChatGPTPlatform(
-            config=RegisterConfig(extra={"chatgpt_registration_mode": "refresh_token"}),
-            mailbox=_BlankMailbox(),
-        )
-
-        with mock.patch(
-            "platforms.chatgpt.plugin.build_chatgpt_registration_mode_adapter",
-            return_value=_FakeAdapter(),
-        ):
-            with self.assertRaises(RuntimeError) as ctx:
-                platform.register()
-
-        self.assertIn("custom_provider 返回空邮箱地址", str(ctx.exception))
-
-    def test_custom_provider_uses_mailbox_baseline_for_verification_code(self):
-        mailbox = _TrackingMailbox()
-        platform = ChatGPTPlatform(
-            config=RegisterConfig(extra={"chatgpt_registration_mode": "refresh_token"}),
-            mailbox=mailbox,
-        )
-        adapter = _VerificationAdapter()
-
+    def _register(self, platform, adapter):
         with mock.patch(
             "platforms.chatgpt.plugin.build_chatgpt_registration_mode_adapter",
             return_value=adapter,
         ):
-            result = platform.register()
+            return platform.register()
 
-        self.assertTrue(adapter.run_called)
-        self.assertEqual(adapter.last_code, "123456")
-        self.assertEqual(result["success"], True)
-        self.assertEqual(mailbox.current_ids_calls, [mailbox.account])
-        self.assertIsNotNone(mailbox.wait_call)
-        _, kwargs = mailbox.wait_call
-        self.assertEqual(kwargs.get("before_ids"), {"mid-1"})
-        self.assertEqual(kwargs.get("otp_sent_at"), 123.0)
-        self.assertEqual(kwargs.get("exclude_codes"), {"654321"})
-
-    def test_custom_provider_prefers_configured_mailbox_timeout(self):
-        mailbox = _TrackingMailbox()
+    def test_register_passes_mailbox_and_runtime_context_to_adapter(self):
+        mailbox = _StubMailbox()
         platform = ChatGPTPlatform(
             config=RegisterConfig(
+                proxy="http://127.0.0.1:7890",
                 extra={
                     "chatgpt_registration_mode": "refresh_token",
                     "mailbox_otp_timeout_seconds": 90,
-                }
+                },
             ),
             mailbox=mailbox,
         )
-        adapter = _VerificationAdapter()
+        adapter = _RecordingAdapter()
+
+        account = self._register(platform, adapter)
+
+        self.assertEqual(account, "account-sentinel")
+        context = adapter.context
+        self.assertIs(context.mailbox, mailbox)
+        self.assertEqual(context.mailbox_kind, "mailbox")
+        self.assertEqual(context.proxy_url, "http://127.0.0.1:7890")
+        self.assertEqual(context.extra_config["mailbox_otp_timeout_seconds"], 90)
+
+    def test_register_generates_password_when_not_supplied(self):
+        adapter = _RecordingAdapter()
+        platform = ChatGPTPlatform(config=RegisterConfig(), mailbox=_StubMailbox())
+
+        self._register(platform, adapter)
+
+        generated = adapter.context.password
+        self.assertTrue(generated)
+        self.assertGreaterEqual(len(generated), 16)
+        # 生成的密码同时作为兜底密码传给 build_account
+        self.assertEqual(adapter.build_account_args[1], generated)
+
+    def test_register_keeps_caller_supplied_credentials(self):
+        adapter = _RecordingAdapter()
+        platform = ChatGPTPlatform(config=RegisterConfig(), mailbox=_StubMailbox())
 
         with mock.patch(
             "platforms.chatgpt.plugin.build_chatgpt_registration_mode_adapter",
             return_value=adapter,
         ):
-            platform.register()
+            platform.register(email="fixed@example.com", password="fixed-pw")
 
-        _, kwargs = mailbox.wait_call
-        self.assertEqual(kwargs.get("timeout"), 90)
+        self.assertEqual(adapter.context.email, "fixed@example.com")
+        self.assertEqual(adapter.context.password, "fixed-pw")
 
-    def test_custom_provider_does_not_requeue_mailbox_account_on_failure(self):
-        mailbox = _RequeueMailbox()
+    def test_register_falls_back_to_tempmail_when_no_mailbox_bound(self):
+        adapter = _RecordingAdapter()
+        platform = ChatGPTPlatform(config=RegisterConfig(proxy="http://proxy:1"))
+        sentinel_control = object()
+        platform._task_control = sentinel_control
+
+        tempmail = mock.Mock()
+        with mock.patch("core.base_mailbox.TempMailLolMailbox", return_value=tempmail):
+            self._register(platform, adapter)
+
+        self.assertIs(adapter.context.mailbox, tempmail)
+        self.assertEqual(adapter.context.mailbox_kind, "tempmail_lol")
+        self.assertIs(tempmail._task_control, sentinel_control)
+
+    def test_register_raises_with_engine_error_message(self):
+        mailbox = _StubMailbox()
+        adapter = _RecordingAdapter(
+            RegistrationResult(success=False, error_message="邮箱未取到验证码")
+        )
+        platform = ChatGPTPlatform(config=RegisterConfig(), mailbox=mailbox)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._register(platform, adapter)
+
+        self.assertIn("邮箱未取到验证码", str(ctx.exception))
+        # 邮箱归还由任务运行时统一处理，插件不得私自回收
+        self.assertEqual(mailbox.requeued, [])
+
+    def test_register_builds_account_through_adapter(self):
         platform = ChatGPTPlatform(
-            config=RegisterConfig(extra={"chatgpt_registration_mode": "refresh_token"}),
-            mailbox=mailbox,
+            config=RegisterConfig(extra={"chatgpt_registration_mode": "access_token_only"}),
+            mailbox=_StubMailbox(),
+        )
+        result = RegistrationResult(
+            success=True,
+            email="demo@example.com",
+            password="pw-from-engine",
+            access_token="at-demo",
         )
 
         with mock.patch(
-            "platforms.chatgpt.plugin.build_chatgpt_registration_mode_adapter",
-            return_value=_FailingAdapter(),
-        ):
-            with self.assertRaises(RuntimeError):
-                platform.register()
+            "platforms.chatgpt.chatgpt_registration_mode_adapter.ChatGPTRegistrationEngine"
+        ) as engine_cls:
+            engine_cls.return_value.run.return_value = result
+            account = platform.register()
 
-        self.assertEqual(mailbox.requeued, [])
+        self.assertEqual(account.platform, "chatgpt")
+        self.assertEqual(account.email, "demo@example.com")
+        self.assertEqual(account.password, "pw-from-engine")
+        self.assertEqual(account.token, "at-demo")
+        self.assertEqual(account.status, AccountStatus.REGISTERED)
+        self.assertEqual(
+            account.extra["chatgpt_registration_mode"], "access_token_only"
+        )
 
 
 if __name__ == "__main__":

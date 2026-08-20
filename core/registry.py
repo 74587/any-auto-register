@@ -1,49 +1,58 @@
 """平台插件注册表 - 自动扫描 platforms/ 目录加载插件"""
+
+from __future__ import annotations
+
 import importlib
 import pkgutil
-from typing import Dict, Type
+from typing import Type
+
 from .base_platform import BasePlatform
 
-_registry: Dict[str, Type[BasePlatform]] = {}
-_DISABLED_PLATFORMS = {"trae", "qwen"}
+# 项目当前只维护 ChatGPT 与 iCloud 两类注册；其余插件已下线。
+SUPPORTED_PLATFORMS = ("chatgpt", "icloud")
+
+_registry: dict[str, Type[BasePlatform]] = {}
+
+
+def normalize_platform(name: str) -> str:
+    return str(name or "").strip().lower()
 
 
 def is_platform_enabled(name: str) -> bool:
-    return str(name or "").strip().lower() not in _DISABLED_PLATFORMS
+    return normalize_platform(name) in SUPPORTED_PLATFORMS
 
 
-def register(cls: Type[BasePlatform]):
+def register(cls: Type[BasePlatform]) -> Type[BasePlatform]:
     """装饰器：注册平台插件"""
-    if not is_platform_enabled(cls.name):
-        return cls
-    _registry[cls.name] = cls
+    if is_platform_enabled(cls.name):
+        _registry[cls.name] = cls
     return cls
 
 
-def load_all():
-    """自动扫描并加载 platforms/ 下所有插件"""
+def load_all() -> None:
+    """自动扫描并加载 platforms/ 下所有受支持的插件"""
     import platforms
-    for finder, name, _ in pkgutil.iter_modules(platforms.__path__, platforms.__name__ + "."):
-        platform_name = name.rsplit(".", 1)[-1].lower()
-        if not is_platform_enabled(platform_name):
+
+    for _, module_name, _ in pkgutil.iter_modules(platforms.__path__, platforms.__name__ + "."):
+        if not is_platform_enabled(module_name.rsplit(".", 1)[-1]):
             continue
         try:
-            importlib.import_module(f"{name}.plugin")
+            importlib.import_module(f"{module_name}.plugin")
         except ModuleNotFoundError:
             pass
 
 
 def get(name: str) -> Type[BasePlatform]:
-    if not is_platform_enabled(name):
+    normalized = normalize_platform(name)
+    if not is_platform_enabled(normalized):
         raise KeyError(f"平台 '{name}' 已下线")
-    if name not in _registry:
-        raise KeyError(f"平台 '{name}' 未注册，已注册: {list(_registry.keys())}")
-    return _registry[name]
+    if normalized not in _registry:
+        raise KeyError(f"平台 '{name}' 未注册，已注册: {list(_registry)}")
+    return _registry[normalized]
 
 
-def list_platforms() -> list:
+def list_platforms() -> list[dict[str, str]]:
     return [
         {"name": cls.name, "display_name": cls.display_name, "version": cls.version}
         for cls in _registry.values()
-        if is_platform_enabled(cls.name)
     ]

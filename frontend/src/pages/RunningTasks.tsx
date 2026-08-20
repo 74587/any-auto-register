@@ -20,6 +20,7 @@ import {
   LoadingOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
+import { getPlatformColor, getPlatformLabel } from '@/lib/platforms'
 import { apiFetch } from '@/lib/utils'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
 
@@ -39,15 +40,6 @@ interface TaskSnapshot {
   created_at: number | string | null
   updated_at: number | string | null
   control: { stop_requested: boolean }
-}
-
-const PLATFORM_LABELS: Record<string, string> = {
-  chatgpt: 'ChatGPT',
-  cursor: 'Cursor',
-  grok: 'Grok',
-  kiro: 'Kiro',
-  tavily: 'Tavily',
-  openblocklabs: 'OpenBlock Labs',
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -180,8 +172,8 @@ export default function RunningTasks() {
                 {task.id}
               </Text>
               <Space size={4}>
-                <Tag color="blue" style={{ margin: 0 }}>
-                  {PLATFORM_LABELS[task.platform] || task.platform}
+                <Tag color={getPlatformColor(task.platform)} style={{ margin: 0 }}>
+                  {getPlatformLabel(task.platform)}
                 </Tag>
                 <Text type="secondary" style={{ fontSize: 11 }}>
                   {SOURCE_LABELS[task.source] || task.source || '-'}

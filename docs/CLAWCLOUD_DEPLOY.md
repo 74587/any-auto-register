@@ -95,7 +95,7 @@ git push
 
 业务相关可按需增加：
 - `OPENAI_*`
-- `SMSTOME_COOKIE`
+- `OPENAI_SENTINEL_NODE_PATH`（`node` 不在 `PATH` 时指定绝对路径；ChatGPT 注册的 Sentinel PoW 求解器依赖它）
 - 其他第三方服务密钥
 
 ## 6. 启动后验证

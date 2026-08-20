@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from core.config_store import config_store
 from services.mail_imports import MailImportExecuteRequest, MailImportSnapshotRequest, mail_import_registry
+from services.sms_service import SMS_DEFAULT_COUNTRY, SMS_DEFAULT_SERVICE
 
 router = APIRouter(prefix="/config", tags=["config"])
 
@@ -63,12 +64,6 @@ CONFIG_KEYS = [
     "cfworker_random_subdomain",
     "cfworker_random_name_subdomain",
     "cfworker_fingerprint",
-    "smstome_cookie",
-    "smstome_country_slugs",
-    "smstome_phone_attempts",
-    "smstome_otp_timeout_seconds",
-    "smstome_poll_interval_seconds",
-    "smstome_sync_max_pages_per_country",
     "luckmail_base_url",
     "luckmail_api_key",
     "luckmail_email_type",
@@ -92,12 +87,26 @@ CONFIG_KEYS = [
     "codex_proxy_upload_type",
     "cliproxyapi_base_url",
     "cliproxyapi_management_key",
-    "grok2api_url",
-    "grok2api_app_key",
-    "grok2api_pool",
-    "grok2api_quota",
-    "kiro_manager_path",
-    "kiro_manager_exe",
+    "icloud_region",
+    "icloud_alias_label",
+    "icloud_alias_note",
+    "icloud_account_email",
+    "sms_enabled",
+    "sms_provider",
+    "sms_api_key",
+    "sms_service",
+    "sms_country",
+    "sms_auto_country",
+    "sms_allowed_countries",
+    "sms_auto_min_stock",
+    "sms_auto_max_price",
+    "sms_max_price",
+    "sms_fixed_price",
+    "sms_reuse_phone",
+    "sms_phone_success_max",
+    "sms_per_phone_timeout",
+    "sms_max_phone_attempts",
+    "sms_code_retries_per_phone",
     "external_apps_update_mode",
     "contribution_enabled",
     "contribution_server_url",
@@ -152,6 +161,14 @@ def get_config():
         all_cfg["email_domain_rule_enabled"] = "0"
     if not str(all_cfg.get("email_domain_level_count", "") or "").strip():
         all_cfg["email_domain_level_count"] = "2"
+    if not str(all_cfg.get("sms_enabled", "") or "").strip():
+        all_cfg["sms_enabled"] = "0"
+    if not all_cfg.get("sms_provider"):
+        all_cfg["sms_provider"] = "smsbower"
+    if not all_cfg.get("sms_service"):
+        all_cfg["sms_service"] = SMS_DEFAULT_SERVICE
+    if not all_cfg.get("sms_country"):
+        all_cfg["sms_country"] = SMS_DEFAULT_COUNTRY
     # 只返回已知 key，未设置的返回空字符串
     return {k: all_cfg.get(k, "") for k in CONFIG_KEYS}
 

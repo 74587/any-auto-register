@@ -18,12 +18,18 @@ import {
   CloseCircleOutlined,
   LoadingOutlined,
 } from '@ant-design/icons'
+import { listICloudAccounts, type ICloudAccount } from '@/api/icloud'
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
 import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatGPTRegistrationMode'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
 import { buildChatGPTRegistrationRequestAdapter } from '@/lib/chatgptRegistrationRequestAdapter'
-import { getExecutorOptions, normalizeExecutorForPlatform } from '@/lib/platformExecutorOptions'
+import {
+  PLATFORM_OPTIONS,
+  getExecutorOptions,
+  getPlatformMeta,
+  normalizeExecutorForPlatform,
+} from '@/lib/platforms'
 import { apiFetch } from '@/lib/utils'
 
 const { Text } = Typography
@@ -37,8 +43,15 @@ export default function RegisterTaskPage() {
   const [form] = Form.useForm()
   const [task, setTask] = useState<any>(null)
   const [polling, setPolling] = useState(false)
+  const [icloudAccounts, setIcloudAccounts] = useState<ICloudAccount[]>([])
   const { mode: chatgptRegistrationMode, setMode: setChatgptRegistrationMode } =
     usePersistentChatGPTRegistrationMode()
+
+  useEffect(() => {
+    listICloudAccounts()
+      .then((accounts) => setIcloudAccounts(accounts.filter((item) => item.enabled)))
+      .catch(() => setIcloudAccounts([]))
+  }, [])
 
   useEffect(() => {
     apiFetch('/config').then((cfg) => {
@@ -96,12 +109,9 @@ export default function RegisterTaskPage() {
         cfworker_random_subdomain: parseBooleanConfigValue(cfg.cfworker_random_subdomain),
         cfworker_random_name_subdomain: parseBooleanConfigValue(cfg.cfworker_random_name_subdomain),
         cfworker_fingerprint: cfg.cfworker_fingerprint || '',
-        smstome_cookie: cfg.smstome_cookie || '',
-        smstome_country_slugs: cfg.smstome_country_slugs || '',
-        smstome_phone_attempts: cfg.smstome_phone_attempts || '',
-        smstome_otp_timeout_seconds: cfg.smstome_otp_timeout_seconds || '',
-        smstome_poll_interval_seconds: cfg.smstome_poll_interval_seconds || '',
-        smstome_sync_max_pages_per_country: cfg.smstome_sync_max_pages_per_country || '',
+        sms_country: cfg.sms_country || '',
+        sms_per_phone_timeout: cfg.sms_per_phone_timeout || '',
+        sms_max_phone_attempts: cfg.sms_max_phone_attempts || '',
         luckmail_base_url: cfg.luckmail_base_url || 'https://mails.luckyous.com/',
         luckmail_api_key: cfg.luckmail_api_key || '',
         luckmail_email_type: cfg.luckmail_email_type || '',
@@ -160,12 +170,9 @@ export default function RegisterTaskPage() {
       cfworker_random_subdomain: values.cfworker_random_subdomain,
       cfworker_random_name_subdomain: values.cfworker_random_name_subdomain,
       cfworker_fingerprint: values.cfworker_fingerprint,
-      smstome_cookie: values.smstome_cookie,
-      smstome_country_slugs: values.smstome_country_slugs,
-      smstome_phone_attempts: values.smstome_phone_attempts,
-      smstome_otp_timeout_seconds: values.smstome_otp_timeout_seconds,
-      smstome_poll_interval_seconds: values.smstome_poll_interval_seconds,
-      smstome_sync_max_pages_per_country: values.smstome_sync_max_pages_per_country,
+      sms_country: values.sms_country,
+      sms_per_phone_timeout: values.sms_per_phone_timeout,
+      sms_max_phone_attempts: values.sms_max_phone_attempts,
       luckmail_base_url: values.luckmail_base_url,
       luckmail_api_key: values.luckmail_api_key,
       luckmail_email_type: values.luckmail_email_type,
@@ -222,6 +229,9 @@ export default function RegisterTaskPage() {
   const captchaSolver = Form.useWatch('captcha_solver', form)
   const platform = Form.useWatch('platform', form)
   const executorOptions = getExecutorOptions(platform)
+  const platformMeta = getPlatformMeta(platform)
+  const usesMailbox = platformMeta?.usesMailbox ?? true
+  const usesCaptcha = platformMeta?.usesCaptcha ?? true
 
   useEffect(() => {
     const currentExecutor = form.getFieldValue('executor_type')
@@ -259,21 +269,17 @@ export default function RegisterTaskPage() {
       }}>
         <Card title="基本配置" style={{ marginBottom: 16 }}>
           <Form.Item name="platform" label="平台" rules={[{ required: true }]}>
-            <Select
-              options={[
-                { value: 'chatgpt', label: 'ChatGPT' },
-                { value: 'cursor', label: 'Cursor' },
-                { value: 'kiro', label: 'Kiro' },
-                { value: 'grok', label: 'Grok' },
-                { value: 'tavily', label: 'Tavily' },
-                { value: 'openblocklabs', label: 'OpenBlockLabs' },
-              ]}
-            />
+            <Select options={PLATFORM_OPTIONS} />
           </Form.Item>
           <Form.Item name="executor_type" label="执行器" rules={[{ required: true }]}>
             <Select options={executorOptions} />
           </Form.Item>
-          <Form.Item name="captcha_solver" label="验证码" rules={[{ required: true }]}>
+          <Form.Item
+            name="captcha_solver"
+            label="验证码"
+            rules={[{ required: true }]}
+            hidden={!usesCaptcha}
+          >
             <Select
               options={[
                 { value: 'yescaptcha', label: 'YesCaptcha' },
@@ -308,6 +314,36 @@ export default function RegisterTaskPage() {
           )}
         </Card>
 
+        {!usesMailbox && (
+          <Card title="iCloud 隐私邮箱配置" style={{ marginBottom: 16 }}>
+            <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+              批量生成 Hide My Email 地址。请先在“平台管理 → iCloud 隐私邮箱”完成 Apple ID 登录，
+              Apple 对每个主号限制每滚动小时最多成功生成 5 个地址。
+            </Text>
+            <Form.Item
+              name="icloud_account_email"
+              label="主号"
+              extra="留空则自动选择第一个可用主号"
+            >
+              <Select
+                allowClear
+                placeholder="自动选择"
+                options={icloudAccounts.map((account) => ({
+                  value: account.email,
+                  label: account.email,
+                }))}
+              />
+            </Form.Item>
+            <Form.Item name="icloud_alias_label" label="标签（可选）">
+              <Input placeholder="any-auto-register" />
+            </Form.Item>
+            <Form.Item name="icloud_alias_note" label="备注（可选）">
+              <Input placeholder="批量生成" />
+            </Form.Item>
+          </Card>
+        )}
+
+        {usesMailbox && (
         <Card title="邮箱配置" style={{ marginBottom: 16 }}>
           <Form.Item name="mail_provider" label="邮箱服务" rules={[{ required: true }]}>
             <Select
@@ -563,34 +599,27 @@ export default function RegisterTaskPage() {
             </>
           )}
         </Card>
+        )}
 
         {platform === 'chatgpt' && (
-          <Card title="ChatGPT 手机验证" style={{ marginBottom: 16 }}>
+          <Card title="ChatGPT 手机接码" style={{ marginBottom: 16 }}>
             <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              仅在 OAuth 流程进入 `add_phone` 时使用，用于自动取号并轮询短信验证码。
+              仅在注册链路进入 add-phone 时使用：自动租号、等短信、验证，全程无人值守。
+              平台与 API Key 在「设置 → 手机接码」里配置，这里只覆盖本次任务的参数。
             </Text>
-            <Form.Item name="smstome_cookie" label="SMSToMe Cookie">
-              <Input.Password placeholder="cf_clearance=...; PHPSESSID=..." />
+            <Form.Item name="sms_country" label="国家 ID（可选）">
+              <Input placeholder="52（泰国，OpenAI 纯短信白名单）" />
             </Form.Item>
-            <Form.Item name="smstome_country_slugs" label="国家列表">
-              <Input placeholder="united-kingdom,poland,finland" />
+            <Form.Item name="sms_per_phone_timeout" label="单号等待秒数（可选）">
+              <Input placeholder="80" />
             </Form.Item>
-            <Form.Item name="smstome_phone_attempts" label="手机号尝试次数">
+            <Form.Item name="sms_max_phone_attempts" label="最多换号次数（可选）">
               <Input placeholder="3" />
-            </Form.Item>
-            <Form.Item name="smstome_otp_timeout_seconds" label="短信等待秒数">
-              <Input placeholder="45" />
-            </Form.Item>
-            <Form.Item name="smstome_poll_interval_seconds" label="轮询间隔秒数">
-              <Input placeholder="5" />
-            </Form.Item>
-            <Form.Item name="smstome_sync_max_pages_per_country" label="每国同步页数">
-              <Input placeholder="5" />
             </Form.Item>
           </Card>
         )}
 
-        {captchaSolver === 'yescaptcha' && (
+        {usesCaptcha && captchaSolver === 'yescaptcha' && (
           <Card title="验证码配置" style={{ marginBottom: 16 }}>
             <Form.Item name="yescaptcha_key" label="YesCaptcha Key">
               <Input />

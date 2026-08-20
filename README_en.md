@@ -42,17 +42,16 @@ This project is a fork/secondary development based on [lxf746/any-auto-register]
 Based on the current frontend code and UI, the **platforms displayed by default in the left "Platform Management" menu** are:
 
 - ChatGPT
-- Grok
-- Kiro (AWS Builder ID)
-- OpenBlockLabs
-- Trae.ai
+- iCloud (Hide My Email)
 
 ## Features
 
 - **Multi-platform Account Registration & Management**: Unified account list, details, import/export, deletion, batch operations
+- **iCloud Hide My Email**: Apple ID sign-in (SRP + two-factor auth, or cookie import), batch alias generation, and alias inbox viewing
 - **Multiple Executor Modes**: Pure protocol, headless browser, headed browser
 - **Multiple Email Service Integration**: Built-in, third-party, self-hosted Worker Email, and more
 - **Captcha Support**: YesCaptcha, Local Turnstile Solver (Camoufox)
+- **Phone Verification (SMS)**: SmsBower / HeroSMS automatic number rental and OTP retrieval — fully unattended when ChatGPT asks for add-phone
 - **Proxy Capability**: Proxy pool rotation, proxy state maintenance, proxy integration during registration
 - **Batch Registration**: Supports setting registration count, concurrency, and startup delay per account
 - **Real-time Logs**: View registration logs in real-time on the frontend
@@ -94,11 +93,12 @@ Thank you to the following friends and partners for supporting any-auto-register
 | Frontend | React + TypeScript + Vite |
 | HTTP | curl_cffi |
 | Browser Automation | Playwright / Camoufox |
+| ChatGPT Registration Protocol | [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register) (pure protocol; Sentinel PoW runs in a Node sandbox) |
 
 ## Requirements
 
 - Python 3.12+
-- Node.js 18+
+- Node.js 18+ (used both to build the frontend and as the runtime for the ChatGPT Sentinel PoW solver — **it must be executable at registration time**)
 - Conda (recommended)
 - Windows (recommended for using the included startup scripts directly)
 
@@ -106,15 +106,27 @@ Thank you to the following friends and partners for supporting any-auto-register
 
 In the current version, **ChatGPT is one of the most feature-complete platforms**, supporting not only registration but also Token lifecycle management, status probing, and external system synchronization.
 
-### 1. ChatGPT Token Mode Switching
+### 1. Registration Protocol
+
+The entire ChatGPT registration pipeline is ported from [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register) and lives in `platforms/chatgpt/protocol/`. It is a **pure protocol implementation that needs no browser**:
+
+- `http_client.py` — TLS-fingerprinted session built on `curl_cffi`
+- `auth_flow.py` — drives the OpenAI authorize state machine (registration, OTP, add-phone, Codex OAuth)
+- `sentinel_quickjs.py` + `openai_sentinel_quickjs.js` — solve the Sentinel PoW by running OpenAI's real `sdk.js` inside a Node sandbox
+
+> ⚠️ **Sentinel requires a Node runtime.** A hand-rolled PoW token passes the surface check at `/sentinel/req`, but the mail service re-verifies it server-side, so verification emails get dropped silently — the pipeline looks healthy yet the code never arrives. An executable `node` (>= 18) is mandatory; set `OPENAI_SENTINEL_NODE_PATH` to an absolute path if it is not on `PATH`.
+
+This repository wires only three injection points on top of the protocol layer and leaves the protocol itself untouched: the mailbox pool adapter (`protocol/mailbox_adapter.py`), the SMS controller (`services/sms_service.py`), and the password-effective callback. Task-level settings are passed as instance parameters and **never written to process environment variables**, so concurrent registration tasks do not interfere with each other.
+
+### 2. ChatGPT Token Mode Switching
 
 The current version provides two ChatGPT registration modes:
 
 - **With RT** (recommended by default)
-  - Uses the new PR pipeline
+  - Runs the full Codex OAuth exchange
   - Outputs **Access Token + Refresh Token**
-- **Without RT** (legacy compatibility)
-  - Uses the old pipeline
+- **Without RT**
+  - Skips Codex OAuth (saves roughly 10 seconds per account)
   - Only outputs **Access Token / Session**
   - Features depending on RT may not work
 
@@ -122,6 +134,27 @@ This toggle can be found in:
 
 - Registration task page
 - ChatGPT platform registration popup
+
+### 3. Phone Verification (add-phone)
+
+OpenAI asks some registrations to bind a phone number. When add-phone is hit, the system rents a number, waits for the SMS, and submits the code without any manual step. Configure it under **Settings → 手机接码 (Phone SMS)**:
+
+| Setting | Description |
+| --- | --- |
+| Enable SMS | When off, add-phone falls back to the manual number path (`OPENAI_PHONE_NUMBER`) |
+| Provider | SmsBower / HeroSMS — both speak the sms-activate `handler_api.php` protocol |
+| API Key | Provider key; verify it in place with the "Test balance" button |
+| Service code | Providers track stock per service code; OpenAI maps to `dr` |
+| Default country ID | Defaults to `52` (Thailand) |
+| Auto-pick best country | Picks by ascending price plus stock; an allow-list can restrict the candidates |
+| Reuse the same number | Reuses a number within its 20-minute lease until the per-number success cap is reached |
+| Per-number timeout / max number swaps / code retries per number | Retry policy when a code does not arrive |
+
+"Query country ranking" lists price and stock per country for the given service code; green tags mark countries where OpenAI still uses plain SMS.
+
+> ⚠️ Since 2025 OpenAI has moved most countries to WhatsApp verification. In practice only **Thailand (country_id=52)** reliably stays on plain SMS. Other countries may hand you a WhatsApp-only number and no SMS will arrive; auto-selection warns about this but does not block it.
+
+Country ID, per-number timeout, and max number swaps can additionally be overridden per task on the registration task page. The provider and API key are maintained only in the global settings.
 
 ### 4. ChatGPT Batch Status Sync & Re-upload
 
@@ -152,14 +185,17 @@ Based on the actual configuration in the registration page, the project supports
 | Laoudo | `laoudo` | Fixed email solution |
 | CF Worker | `cfworker` | Self-hosted email via Cloudflare Worker |
 
-### Kiro Email Notes
+### iCloud Hide My Email Notes
 
-Kiro currently has strict risk control, and the email solution significantly affects success rate. The project also retains this important note:
+The iCloud platform does not consume the temporary mailboxes listed above; it uses Apple's own Hide My Email addresses instead:
 
-- **Self-hosted email: 100% success rate**
-- **Built-in temporary email: 0% success rate**
+1. Add an Apple ID primary account under "iCloud Hide My Email → Accounts", either way:
+   - **Password sign-in**: runs Apple's SRP protocol and walks through two-factor auth when required (trusted-device push or SMS code);
+   - **Cookie import**: paste iCloud cookies exported from your browser.
+2. Once signed in, generate aliases in bulk from the "Aliases" tab. Apple caps this at **5 aliases per hour**, and the backend throttles per primary account accordingly.
+3. The account's IMAP password (an app-specific password) is used to read alias inboxes. All credentials are encrypted with AES-256-GCM before being persisted.
 
-Therefore, when registering **Kiro (AWS Builder ID)**, it is recommended to prioritize using a **self-hosted email**.
+The encryption key comes from the `CREDENTIAL_ENCRYPTION_KEY` environment variable; when unset, a local key is generated at `.secrets/credential_key`.
 
 ## Quick Start
 
@@ -384,8 +420,9 @@ The host machine mounts to:
 | `APP_ENABLE_SOLVER` | `1` | Whether to auto-start Solver, set to `0` to disable |
 | `SOLVER_PORT` | `8889` | Solver listen port |
 | `LOCAL_SOLVER_URL` | `http://127.0.0.1:8889` | Backend access URL for Solver |
+| `OPENAI_SENTINEL_NODE_PATH` | `node` | Node executable used by the Sentinel PoW solver; set an absolute path when `node` is not on `PATH` |
 
-To change settings like `SMSTOME_COOKIE`, `OPENAI_*`, simply write them to the `.env` file in the repo root, and `docker compose` will automatically inject them into the container environment.
+To change settings like `OPENAI_*`, simply write them to the `.env` file in the repo root, and `docker compose` will automatically inject them into the container environment.
 
 ### Camoufox Build Parameters
 
@@ -398,11 +435,17 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 ### Docker Usage Notes
 
 - The current Docker image primarily covers the main application and local Turnstile Solver
-- Auto-install/launch logic for `grok2api`, `CLIProxyAPI`, `Kiro Account Manager` still favors the host machine environment
+- Auto-install/launch logic for `CLIProxyAPI` still favors the host machine environment
 - If you depend on `conda`, Go, or Windows executables, it is not recommended to run these directly in the current Linux container
 - If you only need Web UI, account management, task scheduling, and local Solver, the current Compose configuration works out of the box
 
 ## Plugins & External Dependencies
+
+### ChatGPT Registration Protocol Source
+
+The protocol stack under `platforms/chatgpt/protocol/` and the SMS implementation in `services/sms_service.py` are ported from:
+
+- <https://github.com/Regert888/gpt-auto-register>
 
 ### Temporary Email Source
 
@@ -417,8 +460,6 @@ The project currently supports on-demand installation/launch of the following ex
 | Project | Purpose | Git URL |
 | --- | --- | --- |
 | CLIProxyAPI | CPA / Proxy pool management service | `https://github.com/router-for-me/CLIProxyAPI.git` |
-| grok2api | Grok token management, backfill, chat/API service | `https://github.com/chenyme/grok2api.git` |
-| kiro-account-manager | Kiro account management plugin | `https://github.com/hj01857655/kiro-account-manager.git` |
 
 The **"Install Latest / Update to Latest"** button in the plugin page syncs the latest code from the repo, and now supports **uninstallation** (stops the service first, then deletes the local plugin directory).
 By default, it updates to the **latest semver tag**; you can also switch back to **branch HEAD** mode in "Settings → Plugins → Install/Update Strategy".
@@ -497,6 +538,16 @@ Then restart:
 ```powershell
 .\start_backend.ps1
 ```
+
+### 6. ChatGPT registration never receives a verification code
+
+First confirm `node` is executable:
+
+```bash
+node --version
+```
+
+The Sentinel PoW solver runs OpenAI's `sdk.js` inside a Node sandbox. Without Node, the computed token fails OpenAI's server-side re-verification and **the verification email is dropped silently** — no obvious error shows up in the logs, but the code never arrives. If `node` is not on `PATH`, point `OPENAI_SENTINEL_NODE_PATH` at an absolute path.
 
 ## Project Structure
 
