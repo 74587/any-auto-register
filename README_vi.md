@@ -12,7 +12,6 @@ Hệ thống quản lý và tự động đăng ký tài khoản đa nền tản
 
 ## Mục lục
 
-- [Giới thiệu dự án](#giới-thiệu-dự-án)
 - [Giao diện hiện tại & các nền tảng được hỗ trợ](#giao-diện-hiện-tại--các-nền-tảng-được-hỗ-trợ)
 - [Tính năng](#tính-năng)
 - [Sản phẩm tự vận hành](#sản-phẩm-tự-vận-hành)
@@ -32,10 +31,6 @@ Hệ thống quản lý và tự động đăng ký tài khoản đa nền tản
 - [Ủng hộ tác giả](#ủng-hộ-tác-giả)
 - [Lịch sử Star](#lịch-sử-star)
 - [Giấy phép](#giấy-phép)
-
-## Giới thiệu dự án
-
-Dự án này được phát triển lại từ [lxf746/any-auto-register](https://github.com/lxf746/any-auto-register.git).
 
 ## Giao diện hiện tại & các nền tảng được hỗ trợ
 
@@ -93,7 +88,7 @@ Cảm ơn những người bạn và đối tác đã hỗ trợ any-auto-regist
 | Frontend | React + TypeScript + Vite |
 | HTTP | curl_cffi |
 | Tự động hóa trình duyệt | Playwright / Camoufox |
-| Giao thức đăng ký ChatGPT | [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register) (giao thức thuần; Sentinel PoW chạy trong sandbox Node) |
+| Giao thức đăng ký ChatGPT | Giao thức thuần; Sentinel PoW chạy trong sandbox Node |
 
 ## Yêu cầu môi trường
 
@@ -108,7 +103,7 @@ Trong phiên bản hiện tại, **ChatGPT là một trong những nền tảng 
 
 ### 1. Giao thức đăng ký
 
-Toàn bộ luồng đăng ký ChatGPT được port từ [Regert888/gpt-auto-register](https://github.com/Regert888/gpt-auto-register), nằm trong `platforms/chatgpt/protocol/`, là **triển khai giao thức thuần, không cần trình duyệt**:
+Toàn bộ luồng đăng ký ChatGPT nằm trong `platforms/chatgpt/protocol/`, là **triển khai giao thức thuần, không cần trình duyệt**:
 
 - `http_client.py` — phiên làm việc với vân tay TLS dựa trên `curl_cffi`
 - `auth_flow.py` — điều khiển máy trạng thái authorize của OpenAI (đăng ký, OTP, add-phone, Codex OAuth)
@@ -116,7 +111,7 @@ Toàn bộ luồng đăng ký ChatGPT được port từ [Regert888/gpt-auto-reg
 
 > ⚠️ **Sentinel cần runtime Node.** Token PoW tự chế vượt được lớp kiểm tra bề mặt ở `/sentinel/req`, nhưng dịch vụ gửi mã sẽ kiểm tra lại phía máy chủ, kết quả là email mã xác minh bị âm thầm loại bỏ — luồng nhìn có vẻ bình thường nhưng mã không bao giờ đến. Bắt buộc phải có `node` (>= 18) chạy được; nếu không nằm trong `PATH`, hãy đặt `OPENAI_SENTINEL_NODE_PATH` trỏ tới đường dẫn tuyệt đối.
 
-Repo này chỉ gắn ba điểm inject lên trên tầng giao thức mà không sửa chính giao thức: adapter pool email (`protocol/mailbox_adapter.py`), controller nhận mã SMS (`services/sms_service.py`), và callback khi mật khẩu có hiệu lực. Cấu hình theo từng tác vụ được truyền qua tham số instance, **không ghi vào biến môi trường tiến trình**, nên nhiều tác vụ đăng ký chạy song song không ảnh hưởng lẫn nhau.
+Chỉ có ba điểm inject nằm trên tầng giao thức: adapter pool email (`protocol/mailbox_adapter.py`), controller nhận mã SMS (`services/sms_service.py`), và callback khi mật khẩu có hiệu lực. Cấu hình theo từng tác vụ được truyền qua tham số instance, **không ghi vào biến môi trường tiến trình**, nên nhiều tác vụ đăng ký chạy song song không ảnh hưởng lẫn nhau.
 
 ### 2. Chuyển đổi phương thức Token ChatGPT
 
@@ -440,12 +435,6 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 - Nếu chỉ cần Web UI, quản lý tài khoản, điều phối tác vụ và Solver cục bộ, cấu hình Compose hiện tại có thể sử dụng trực tiếp
 
 ## Plugin & phụ thuộc bên ngoài
-
-### Nguồn giao thức đăng ký ChatGPT
-
-Bộ giao thức trong `platforms/chatgpt/protocol/` và phần nhận mã SMS trong `services/sms_service.py` được port từ:
-
-- <https://github.com/Regert888/gpt-auto-register>
 
 ### Nguồn email tạm thời
 
