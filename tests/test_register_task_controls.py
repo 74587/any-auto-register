@@ -12,6 +12,7 @@ from api.tasks import (
 )
 from core.base_mailbox import BaseMailbox, MailboxAccount
 from core.base_platform import Account, BasePlatform
+from core.task_runtime import NonRetryableRegisterError
 
 
 class _FakeMailbox(BaseMailbox):
@@ -178,6 +179,52 @@ class RegisterRetryRoundsTests(unittest.TestCase):
         self.assertNotIn("[RETRY]", joined)
         # 只有一轮时日志不该多出"第 x/y 轮"的噪声
         self.assertIn("开始注册第 1/1 个账号\n", joined + "\n")
+
+
+class _DeadEndPlatform(_FlakyPlatform):
+    """每轮都以"重开也没用"的方式失败。"""
+
+    attempts = 0
+
+    def register(self, email: str, password: str = None) -> Account:
+        type(self).attempts += 1
+        raise NonRetryableRegisterError("手机号 +2349157587437 的账号已在 OpenAI 侧创建")
+
+
+class NonRetryableFailureTests(unittest.TestCase):
+    """号源被静默拦下时，多开几轮只会多几个孤号。"""
+
+    def test_dead_end_failure_skips_the_remaining_rounds(self):
+        req = RegisterTaskRequest(
+            platform="chatgpt",
+            count=1,
+            concurrency=1,
+            register_retry_times=4,
+            extra={"mail_provider": "fake"},
+        )
+        _create_task_record("task-retry-dead-end", req, "manual", None)
+        _DeadEndPlatform.attempts = 0
+        saved_logs: list[tuple] = []
+
+        with (
+            patch("core.registry.get", return_value=_DeadEndPlatform),
+            patch("core.base_mailbox.create_mailbox", return_value=_FakeMailbox()),
+            patch("core.db.save_account", side_effect=lambda account: account),
+            patch(
+                "api.tasks._save_task_log",
+                side_effect=lambda *args, **kwargs: saved_logs.append((args, kwargs)),
+            ),
+        ):
+            _run_register("task-retry-dead-end", req)
+
+        snapshot = _task_store.snapshot("task-retry-dead-end")
+        joined = "\n".join(snapshot["logs"])
+
+        self.assertEqual(_DeadEndPlatform.attempts, 1)
+        self.assertIn("跳过剩下 4 轮", joined)
+        self.assertEqual(len(snapshot["errors"]), 1)
+        # 提前收手也要落一条 failed 记录，否则这个序号在统计里凭空消失
+        self.assertEqual([args[2] for args, _ in saved_logs], ["failed"])
 
 
 class RegisterRetryTimesNormalisationTests(unittest.TestCase):

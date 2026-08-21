@@ -831,11 +831,16 @@ class PhoneAccountCreatedError(RuntimeError):
         self.phone = phone
         self.password = password
         self.reason = reason
+        # 发码请求被受理、接码平台却一条短信都没收到 —— 这是号源被静默拦下，
+        # 不是这一次运气差。整条流程重开只会用同样的号源再造一个孤号，所以
+        # 明确标成"别重试"，让外层把剩下的轮次省下来。
+        self.sms_never_arrived = "没收到短信" in reason or "超时" in reason
+        self.retryable = not self.sms_never_arrived
         detail = f"手机号 {phone} 的账号已在 OpenAI 侧创建"
         if password:
             detail += f"（密码 {password}）"
         hint = ""
-        if "没收到短信" in reason or "超时" in reason:
+        if self.sms_never_arrived:
             # 实测（尼日利亚 19 与泰国 52 都试过）：OpenAI 收下发码请求、返回 200，
             # 接码平台却全程 Waiting for SMS —— 短信根本没进这些虚拟号。
             # 换国家救不了，得换号源，所以别再让人对着国家号反复烧钱。

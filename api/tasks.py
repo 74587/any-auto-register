@@ -9,6 +9,7 @@ from core.db import TaskLog, TaskRunModel, engine
 from core.task_runtime import (
     AttemptOutcome,
     AttemptResult,
+    NonRetryableRegisterError,
     RegisterTaskStore,
     SkipCurrentAttemptRequested,
     StopTaskRequested,
@@ -490,6 +491,14 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                     return result
                 if control.is_stop_requested():
                     return result
+                if not result.retryable:
+                    # 号源被静默拦下这类失败，重开一轮只是再租一次号、再造一个孤号
+                    _log(
+                        task_id,
+                        f"[RETRY] 第 {i + 1} 个账号这次的失败重开也是同样结局，"
+                        f"跳过剩下 {total_rounds - round_no + 1} 轮: {result.message}",
+                    )
+                    return result
                 _log(
                     task_id,
                     f"[RETRY] 第 {i + 1} 个账号第 {round_no - 1}/{total_rounds} 轮失败，"
@@ -626,16 +635,17 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                 if _proxy:
                     _proxy_pool.report_fail(_proxy)
                 _log(task_id, f"[FAIL] 注册失败{round_suffix}: {e}")
+                retryable = not isinstance(e, NonRetryableRegisterError)
                 # 中间轮次的失败只写任务日志：注册记录按"一个序号一条结果"记，
                 # 否则重试成功了还会在统计里留下一条失败
-                if is_last_round:
+                if is_last_round or not retryable:
                     _save_task_log(
                         req.platform,
                         current_email,
                         "failed",
                         error=str(e),
                     )
-                return AttemptResult.failed(str(e))
+                return AttemptResult.failed(str(e), retryable=retryable)
             finally:
                 control.finish_attempt(attempt_id)
 

@@ -579,6 +579,14 @@ class PhoneAccountCreatedMessageTests(unittest.TestCase):
         self.assertIn("pw", text)
         self.assertIn("接码平台全程没收到任何短信", text)
         self.assertIn("换号源", text)
+        # 号源静默拦码时，外层整流程重试只会再造一个孤号
+        self.assertFalse(err.retryable)
+
+    def test_other_failures_still_deserve_a_fresh_round(self):
+        err = PhoneAccountCreatedError(
+            "phone-otp/validate 返回 400", phone="+66968649749", password="pw"
+        )
+        self.assertTrue(err.retryable)
 
 
 class SendPhoneOtpTests(unittest.TestCase):
@@ -640,6 +648,46 @@ class SendPhoneOtpTests(unittest.TestCase):
         self.assertIn("phone-otp/send", message)
         self.assertIn("add-phone/send", message)
         self.assertIn("invalid authorization step", message)
+
+
+class PluginFailurePropagationTests(unittest.TestCase):
+    def test_unretryable_result_reaches_the_task_layer_as_such(self):
+        from core.base_platform import RegisterConfig
+        from core.task_runtime import NonRetryableRegisterError
+        from platforms.chatgpt.plugin import ChatGPTPlatform
+        from platforms.chatgpt.registration_engine import RegistrationResult
+
+        adapter = mock.Mock()
+        adapter.run.return_value = RegistrationResult(
+            success=False, error_message="账号已建好但一条短信都没收到", retryable=False
+        )
+        platform = ChatGPTPlatform(config=RegisterConfig(extra={}), mailbox=object())
+
+        with mock.patch(
+            "platforms.chatgpt.plugin.build_chatgpt_registration_mode_adapter",
+            return_value=adapter,
+        ):
+            with self.assertRaises(NonRetryableRegisterError):
+                platform.register(email="a@b.c", password="pw")
+
+    def test_ordinary_failure_stays_retryable(self):
+        from core.base_platform import RegisterConfig
+        from core.task_runtime import NonRetryableRegisterError
+        from platforms.chatgpt.plugin import ChatGPTPlatform
+        from platforms.chatgpt.registration_engine import RegistrationResult
+
+        adapter = mock.Mock()
+        adapter.run.return_value = RegistrationResult(success=False, error_message="网络抖了")
+        platform = ChatGPTPlatform(config=RegisterConfig(extra={}), mailbox=object())
+
+        with mock.patch(
+            "platforms.chatgpt.plugin.build_chatgpt_registration_mode_adapter",
+            return_value=adapter,
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                platform.register(email="a@b.c", password="pw")
+
+        self.assertNotIsInstance(ctx.exception, NonRetryableRegisterError)
 
 
 class RegistrationEngineFlowDispatchTests(unittest.TestCase):
@@ -714,6 +762,22 @@ class RegistrationEngineFlowDispatchTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.email, "+56971901026")
         self.assertEqual(result.metadata["bind_email_error"], "invalid state")
+
+    def test_dead_end_failure_is_marked_unretryable_for_the_task_layer(self):
+        """半成品账号 + 平台零短信：这个信号要一路传到外层重试那里。"""
+        engine = self._engine(REGISTER_FLOW_PHONE)
+        flow = mock.Mock()
+        flow.result = AuthResult()
+        flow._bind_email_error = ""
+        flow.run_phone_register.side_effect = PhoneAccountCreatedError(
+            "号 +2349157587437 在 120s 内没收到短信", phone="+2349157587437", password="pw"
+        )
+
+        with mock.patch.object(ChatGPTRegistrationEngine, "_build_flow", return_value=flow):
+            result = engine.run()
+
+        self.assertFalse(result.success)
+        self.assertFalse(result.retryable)
 
     def test_protocol_steps_reach_the_task_log(self):
         """协议层的步骤要看得见，否则线上出事只能靠猜。"""

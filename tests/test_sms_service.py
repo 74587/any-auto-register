@@ -217,6 +217,42 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         # 每个国家先试 V2 再退 V1
         self.assertEqual(calls[:2], [("getNumberV2", "16"), ("getNumber", "16")])
 
+    def test_no_numbers_points_at_the_bid_being_below_market(self):
+        """NO_NUMBERS 大多不是没货，是出价压得太低。"""
+        provider = SmsActivateProvider(api_key="k", reuse_phone_to_max=False, fixed_price=0.054)
+
+        with (
+            mock.patch.object(provider, "_request_number", side_effect=RuntimeError("NO_NUMBERS")),
+            mock.patch.object(
+                provider, "get_prices", return_value={"19": {"dr": {"cost": 0.548, "count": 200}}}
+            ),
+            self.assertLogs("services.sms_service", level="WARNING") as logs,
+        ):
+            with self.assertRaises(RuntimeError):
+                provider.get_number(service="dr", country_candidates=["19"])
+
+        joined = "\n".join(logs.output)
+        self.assertIn("出价太低", joined)
+        self.assertIn("0.548", joined)
+        self.assertIn("0.054", joined)
+
+    def test_bid_at_market_price_is_not_nagged_about(self):
+        provider = SmsActivateProvider(api_key="k", reuse_phone_to_max=False, max_price=0.6)
+
+        with (
+            mock.patch.object(provider, "_request_number", side_effect=RuntimeError("NO_NUMBERS")),
+            mock.patch.object(
+                provider, "get_prices", return_value={"19": {"dr": {"cost": 0.548}}}
+            ),
+            mock.patch.object(sms_service.logger, "warning") as warn,
+        ):
+            with self.assertRaises(RuntimeError):
+                provider.get_number(service="dr", country_candidates=["19"])
+
+        self.assertEqual(
+            [c for c in warn.call_args_list if "出价太低" in str(c)], []
+        )
+
     def test_get_number_reports_every_candidate_failure(self):
         provider = SmsActivateProvider(api_key="k", reuse_phone_to_max=False)
         with mock.patch.object(provider, "_request_number", side_effect=RuntimeError("NO_BALANCE")):

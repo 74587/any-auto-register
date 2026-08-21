@@ -253,6 +253,7 @@ class SmsActivateProvider(BaseSmsProvider):
         self.phone_success_max = max(0, int(phone_success_max or 0))
         self.last_code_result: Optional[dict] = None
         self.current_activation: Optional[SmsActivation] = None
+        self._warned_low_bid = False
 
     # ── HTTP ──
 
@@ -595,9 +596,42 @@ class SmsActivateProvider(BaseSmsProvider):
                     return activation
 
             detail = " | ".join(failures) if failures else "未知"
+            if "NO_NUMBERS" in detail:
+                self._explain_no_numbers(service_code, country_candidates)
             raise RuntimeError(
                 f"依次尝试 {len(country_candidates)} 个候选国家全部失败: {detail}"
             ) from last_exc
+
+    def _explain_no_numbers(self, service: str, countries: list[str]) -> None:
+        """NO_NUMBERS 多半不是没货，是出价太低 —— 把挂牌价查出来摆在日志里。
+
+        平台按出价撮合，出价压在挂牌价以下时既租不到号，偶尔撮合成功的也是被反复
+        回收的号段。只查一次价，别让每轮换号都多打一次接口。
+        """
+        bid = self.fixed_price if self.fixed_price > 0 else self.max_price
+        if bid <= 0 or self._warned_low_bid:
+            return
+        self._warned_low_bid = True
+        for country in countries:
+            try:
+                prices = self.get_prices(service, country) or {}
+                market = _safe_float(
+                    ((prices.get(str(country)) or {}).get(service) or {}).get("cost"), 0
+                )
+            except Exception:
+                continue
+            if market > 0 and bid < market:
+                logger.warning(
+                    "租不到号多半是出价太低: %s 的 %s 挂牌价 %.3f，当前出价只有 %.3f"
+                    "（约挂牌价的 %d%%）；把接码设置里的固定价/最高价提到 %.2f 以上再试",
+                    country_label(str(country)),
+                    service,
+                    market,
+                    bid,
+                    round(bid / market * 100),
+                    market,
+                )
+                return
 
     # ── 等码 / 状态查询 ──
 

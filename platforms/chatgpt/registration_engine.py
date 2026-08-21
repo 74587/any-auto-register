@@ -55,6 +55,8 @@ class RegistrationResult:
     cookie_header: str = ""
     error_message: str = ""
     source: str = "register"
+    # 失败重开一轮有没有意义：号源被静默拦下这种，重开只是再赔一次
+    retryable: bool = True
     metadata: dict = field(default_factory=dict)
 
     @classmethod
@@ -255,6 +257,7 @@ class ChatGPTRegistrationEngine:
                 email=getattr(result, "bound_email", "") or result.email or self.email,
                 password=result.password or self.password,
                 error_message=str(exc),
+                retryable=bool(getattr(exc, "retryable", True)),
             )
 
         needs_refresh_token = self.mode == REGISTRATION_MODE_REFRESH_TOKEN
