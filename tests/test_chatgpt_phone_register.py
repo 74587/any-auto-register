@@ -605,6 +605,18 @@ class SendPhoneOtpTests(unittest.TestCase):
             flow.session.calls[-1]["json"], {"phone_number": "+56971901026", "channel": "sms"}
         )
 
+    def test_logs_the_server_reply_verbatim(self):
+        """HTTP 200 只说明这一步被受理了，短信往哪儿发全在响应体里。"""
+        body = '{"page":{"type":"contact_verification"},"channel":"whatsapp"}'
+        flow = self._flow([_FakeResponse(text=body, payload={"page": {"type": "contact_verification"}})])
+
+        with self.assertLogs("platforms.chatgpt.protocol.phone_flow", level="INFO") as logs:
+            flow.send_phone_otp("+56971901026")
+
+        joined = "\n".join(logs.output)
+        self.assertIn(body, joined)
+        self.assertIn("WhatsApp", joined)
+
     def test_reports_every_endpoint_it_tried(self):
         flow = self._flow([_FakeResponse(status_code=400, text="invalid authorization step")] * 3)
 

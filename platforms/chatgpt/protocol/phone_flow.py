@@ -260,7 +260,16 @@ class PhoneRegisterMixin:
 
             self._trace_http(f"phone_otp_send_{method.lower()}", resp)
             if resp.status_code == 200:
-                logger.info("[手机注册] 发码成功: %s %s", method, url)
+                # 只打一句"发码成功"等于什么都没说：HTTP 200 只代表服务端受理了这一步，
+                # 短信到底往哪儿发、走的什么通道，全在响应体里。
+                raw = (resp.text or "").strip()
+                logger.info(
+                    "[手机注册] 发码请求已被受理: %s %s → HTTP 200 body=%s",
+                    method,
+                    url,
+                    raw[:400] or "(空)",
+                )
+                self._warn_if_not_sms_channel(raw)
                 try:
                     return resp.json() or {}
                 except Exception:
@@ -273,6 +282,24 @@ class PhoneRegisterMixin:
             )
 
         raise RuntimeError("触发短信验证码失败；" + " | ".join(failures))
+
+    @staticmethod
+    def _warn_if_not_sms_channel(body: str) -> None:
+        """服务端如果说了走 WhatsApp / 语音，就别让人对着"发码成功"干等 120 秒。"""
+        lowered = (body or "").lower()
+        for keyword, channel in (
+            ("whatsapp", "WhatsApp"),
+            ("voice", "语音电话"),
+            ("flash_call", "闪信来电"),
+            ("flashcall", "闪信来电"),
+        ):
+            if keyword in lowered:
+                logger.warning(
+                    "[手机注册] 服务端提到 %s 通道：验证码可能不是以短信发出的，"
+                    "接码平台收不到属正常，换 52（泰国）这类纯短信号段再试",
+                    channel,
+                )
+                return
 
     # ── 绑定邮箱 ──
 

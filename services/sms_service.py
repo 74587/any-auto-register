@@ -191,6 +191,10 @@ def _cache_file() -> Path:
     return cache_dir / ".sms_phone_cache.json"
 
 
+# getStatusV2 的数字状态：8 = 已取消
+SMS_STATUS_CANCELED = 8
+
+
 def _parse_sms_status_text(text: str) -> dict:
     text = str(text or "").strip()
     if text == "STATUS_WAIT_CODE":
@@ -603,22 +607,33 @@ class SmsActivateProvider(BaseSmsProvider):
         )
 
     def get_status_v2(self, activation_id: str) -> dict:
-        resp = self._request({"action": "getStatusV2", "id": activation_id})
+        # 少了 type=sms 平台只回 {"error":"Bad type parameter"}，而这个错解析下来
+        # 长得和"还在等码"一模一样 —— 等于白等一整个窗口还以为一切正常。
+        resp = self._request({"action": "getStatusV2", "id": activation_id, "type": "sms"})
+        raw_text = (resp.text or "").strip()
         try:
             data = resp.json()
         except ValueError:
-            return _parse_sms_status_text(resp.text.strip())
+            return _parse_sms_status_text(raw_text)
 
         if isinstance(data, str):
             return _parse_sms_status_text(data)
         if not isinstance(data, dict):
-            return {"status": "unknown"}
+            return {"status": "unknown", "raw": raw_text[:200]}
+
+        if data.get("error"):
+            return {"status": "unknown", "raw": raw_text[:200]}
 
         raw_status = data.get("status")
         if isinstance(raw_status, str):
             parsed = _parse_sms_status_text(raw_status)
             if parsed.get("status") != "unknown":
                 return parsed
+
+        candidate = _make_sms_candidate(activation_id, "getStatusV2.code", data.get("code"))
+        if candidate:
+            candidate["full_sms"] = str(data.get("full_sms") or "")
+            return candidate
         for channel in ("sms", "call"):
             item = data.get(channel)
             if isinstance(item, dict):
@@ -627,7 +642,15 @@ class SmsActivateProvider(BaseSmsProvider):
                 )
                 if candidate:
                     return candidate
-        return {"status": "wait_code"}
+
+        description = str(data.get("status_description") or "").strip()
+        if _safe_int(raw_status, -1) == SMS_STATUS_CANCELED:
+            return {"status": "cancel", "raw": description or raw_text[:200]}
+        return {
+            "status": "wait_code",
+            "raw": description or raw_text[:200],
+            "full_sms": str(data.get("full_sms") or ""),
+        }
 
     def wait_for_code(
         self,
@@ -646,7 +669,11 @@ class SmsActivateProvider(BaseSmsProvider):
         with _SMS_CACHE_LOCK:
             used_codes = set((_SMS_CACHE or {}).get("used_codes") or [])
 
+        last_seen = ""
+        next_report = start + 30
+
         while time.time() < deadline:
+            seen_this_round = []
             for source in ("v2", "v1"):
                 try:
                     result = (
@@ -657,7 +684,10 @@ class SmsActivateProvider(BaseSmsProvider):
                 except Exception as exc:
                     logger.debug("查询接码状态 %s 失败: %s", source, exc)
                     continue
+                seen_this_round.append(self._describe_status(source, result))
+                last_seen = " | ".join(seen_this_round)
                 if result.get("status") == "cancel":
+                    logger.info("平台报告号码已取消: %s", last_seen)
                     return None
                 if result.get("status") == "ok":
                     code = str(result.get("code") or "")
@@ -668,8 +698,33 @@ class SmsActivateProvider(BaseSmsProvider):
                             "sms_key": result.get("sms_key") or "",
                         }
 
+            # 「一直没码」到底是平台没收到短信、还是号被取消了，光看超时看不出来
+            if time.time() >= next_report:
+                logger.info(
+                    "等码中 (已等 %ds/%ds)：平台状态 %s",
+                    int(time.time() - start),
+                    timeout,
+                    last_seen or "(未取到)",
+                )
+                next_report = time.time() + 30
+
             time.sleep(poll)
+
+        logger.warning(
+            "等码 %ds 结束，平台始终没收到短信：最后状态 %s", timeout, last_seen or "(未取到)"
+        )
         return None
+
+    @staticmethod
+    def _describe_status(source: str, result: dict) -> str:
+        status = str(result.get("status") or "")
+        detail = str(result.get("raw") or "").strip()
+        full_sms = str(result.get("full_sms") or "").strip()
+        parts = [f"{source}={status}"]
+        if detail:
+            parts.append(detail[:80])
+        parts.append(f"full_sms={full_sms[:80] or 'null'}")
+        return " ".join(parts)
 
     def get_code(self, activation_id: str, *, timeout: int = 180) -> str:
         # 传进来的 timeout 就是真 timeout：号码有 20 分钟生命周期，但 OpenAI 那边的

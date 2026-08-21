@@ -287,6 +287,49 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
             result = provider.get_status_v2("9001")
         self.assertEqual(result["code"], "654321")
 
+    def test_status_v2_asks_for_the_sms_type(self):
+        """少了 type=sms 平台只回 Bad type parameter，等于整轮白等。"""
+        provider = SmsActivateProvider(api_key="k")
+        with mock.patch.object(
+            provider, "_request", return_value=_Resp(payload={"status": 1, "code": None})
+        ) as req:
+            provider.get_status_v2("9001")
+
+        self.assertEqual(req.call_args.args[0]["type"], "sms")
+
+    def test_status_v2_error_payload_is_not_mistaken_for_waiting(self):
+        provider = SmsActivateProvider(api_key="k")
+        with mock.patch.object(
+            provider,
+            "_request",
+            return_value=_Resp(
+                text='{"error":"Bad type parameter"}', payload={"error": "Bad type parameter"}
+            ),
+        ):
+            result = provider.get_status_v2("9001")
+
+        self.assertEqual(result["status"], "unknown")
+        self.assertIn("Bad type parameter", result["raw"])
+
+    def test_status_v2_reads_the_numeric_status_and_full_sms(self):
+        provider = SmsActivateProvider(api_key="k")
+        waiting = {"status": 1, "status_description": "Waiting for sms", "full_sms": None, "code": None}
+        with mock.patch.object(provider, "_request", return_value=_Resp(payload=waiting)):
+            result = provider.get_status_v2("9001")
+        self.assertEqual(result["status"], "wait_code")
+        self.assertEqual(result["raw"], "Waiting for sms")
+
+        cancelled = {"status": 8, "status_description": "Activation is canceled", "code": None}
+        with mock.patch.object(provider, "_request", return_value=_Resp(payload=cancelled)):
+            result = provider.get_status_v2("9001")
+        self.assertEqual(result["status"], "cancel")
+
+        arrived = {"status": 6, "code": "246813", "full_sms": "Your code is 246813"}
+        with mock.patch.object(provider, "_request", return_value=_Resp(payload=arrived)):
+            result = provider.get_status_v2("9001")
+        self.assertEqual(result["code"], "246813")
+        self.assertEqual(result["full_sms"], "Your code is 246813")
+
     def test_status_v2_falls_back_to_plain_text(self):
         provider = SmsActivateProvider(api_key="k")
         with mock.patch.object(provider, "_request", return_value=_Resp("STATUS_OK:111222")):
@@ -304,6 +347,24 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         provider = SmsActivateProvider(api_key="k")
         with mock.patch.object(provider, "get_status_v2", return_value={"status": "cancel"}):
             self.assertIsNone(provider.wait_for_code("9001", timeout=5))
+
+    def test_timeout_reports_what_the_platform_last_said(self):
+        """「一直没码」要能区分：平台压根没收到短信 vs 号被取消。"""
+        provider = SmsActivateProvider(api_key="k")
+        waiting = {
+            "status": "wait_code",
+            "raw": "Waiting for sms",
+            "full_sms": "",
+        }
+        with mock.patch.object(provider, "get_status_v2", return_value=waiting), \
+                mock.patch.object(provider, "get_status", return_value={"status": "wait_code"}), \
+                self.assertLogs("services.sms_service", level="WARNING") as logs:
+            self.assertIsNone(provider.wait_for_code("9001", timeout=1, poll=1))
+
+        joined = "\n".join(logs.output)
+        self.assertIn("平台始终没收到短信", joined)
+        self.assertIn("Waiting for sms", joined)
+        self.assertIn("full_sms=null", joined)
 
     def test_waiting_only_polls_and_never_asks_for_a_resend(self):
         """等码期间只查状态：催发换不来第二条短信，只会把当前 challenge 弄坏。"""
