@@ -29,11 +29,12 @@ from platforms.chatgpt.registration_engine import (
 
 
 class _FakeResponse:
-    def __init__(self, status_code=200, payload=None, text=""):
+    def __init__(self, status_code=200, payload=None, text="", url=""):
         self.status_code = status_code
         self._payload = payload
         self.text = text if text else (json.dumps(payload) if payload is not None else "")
         self.headers = {}
+        self.url = url
 
     def json(self):
         if self._payload is None:
@@ -46,19 +47,25 @@ class _FakeSession:
         self._responses = list(responses)
         self.calls = []
 
-    def _record(self, method, url, headers, payload):
+    def _record(self, method, url, headers, payload, kwargs):
         self.calls.append(
-            {"method": method, "url": url, "headers": headers or {}, "json": payload}
+            {
+                "method": method,
+                "url": url,
+                "headers": headers or {},
+                "json": payload,
+                "kwargs": kwargs,
+            }
         )
         if not self._responses:
             raise AssertionError(f"没有为 {url} 准备响应")
         return self._responses.pop(0)
 
     def post(self, url, headers=None, json=None, timeout=None, **kwargs):
-        return self._record("POST", url, headers, json)
+        return self._record("POST", url, headers, json, kwargs)
 
     def get(self, url, headers=None, timeout=None, **kwargs):
-        return self._record("GET", url, headers, None)
+        return self._record("GET", url, headers, None, kwargs)
 
 
 def _flow(responses=()) -> AuthFlow:
@@ -382,6 +389,67 @@ class PhoneRegisterLoopTests(unittest.TestCase):
 
         self.assertEqual(len(ctrl.rented), 3)
 
+    def test_login_hint_landing_on_the_password_page_skips_authorize_continue(self):
+        """抓包里 login_hint 已经把身份带过去了，浏览器不会再提交一次。
+
+        多打那一枪等于把同一个手机号交两遍，服务端有理由判 invalid state。
+        """
+        ctrl = _FakeController()
+        flow = _loop_flow()
+
+        def _init(url):
+            flow._last_auth_landing_url = "https://auth.openai.com/create-account/password"
+            return "device-1"
+
+        flow.auth_oauth_init = _init
+        flow.get_sentinel_token = lambda device_id: self.fail(
+            "不该为一个根本不会发的 authorize/continue 算 PoW"
+        )
+        flow.phone_authorize_continue = lambda phone, sentinel: self.fail(
+            "login_hint 已经落到设密码页了，不该再提交一次身份"
+        )
+        registered = []
+
+        def _register(phone):
+            registered.append(phone)
+            return {"page": {"type": "phone_otp_verification"}}
+
+        flow.phone_register_user = _register
+        flow._phone_otp_validate = lambda code, referer="": {
+            "continue_url": "https://auth.openai.com/about-you"
+        }
+
+        continue_url, _auth_url = flow._do_phone_register_loop(ctrl)
+
+        self.assertEqual(registered, [ctrl.rented[0]])
+        self.assertEqual(continue_url, "https://auth.openai.com/about-you")
+
+    def test_other_landings_still_submit_the_identity(self):
+        """login_hint 没被服务端认下来时，authorize/continue 这一步不能省。"""
+        ctrl = _FakeController()
+        flow = _loop_flow()
+
+        def _init(url):
+            flow._last_auth_landing_url = "https://auth.openai.com/log-in"
+            return "device-1"
+
+        flow.auth_oauth_init = _init
+        submitted = []
+
+        def _continue(phone, sentinel):
+            submitted.append(phone)
+            return {"page": {"type": "create_account_password"}}
+
+        flow.phone_authorize_continue = _continue
+        flow.phone_register_user = lambda phone: {"page": {"type": "phone_otp_verification"}}
+        flow._phone_otp_validate = lambda code, referer="": {
+            "continue_url": "https://auth.openai.com/about-you"
+        }
+
+        flow._do_phone_register_loop(ctrl)
+
+        self.assertEqual(submitted, [ctrl.rented[0]])
+
     def test_happy_path_registers_then_validates_sms(self):
         ctrl = _FakeController()
         flow = _loop_flow()
@@ -598,7 +666,21 @@ class PhoneAccountCreatedMessageTests(unittest.TestCase):
 class SendPhoneOtpTests(unittest.TestCase):
     def _flow(self, responses):
         flow = _flow(responses)
-        flow._phone_headers = lambda referer: {"Referer": referer}
+        # XHR 头（两个 POST 兜底走这个）：真实实现会带上 Origin / Content-Type
+        flow._phone_headers = lambda referer: {
+            "Referer": referer,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "https://auth.openai.com",
+        }
+        # 导航头用真家伙，这样断言的就是线上真会发出去的那组
+        flow._ua = "Mozilla/5.0 (Macintosh) Chrome/126"
+        flow._fingerprint = {
+            "lang_full": "en-US,en;q=0.9",
+            "sec_ch_ua": '"Chromium";v="126"',
+            "sec_ch_ua_mobile": "?0",
+            "sec_ch_ua_platform": '"macOS"',
+        }
         return flow
 
     def test_prefers_the_endpoint_the_server_pointed_at(self):
@@ -609,6 +691,73 @@ class SendPhoneOtpTests(unittest.TestCase):
         call = flow.session.calls[0]
         self.assertEqual(call["method"], "GET")
         self.assertEqual(call["url"], "https://auth.openai.com/api/accounts/phone-otp/send")
+
+    def test_send_get_is_a_document_navigation_not_an_xhr(self):
+        """抓包里这一枪是整页跳转：Accept 是 HTML，没有 Origin/Content-Type。
+
+        按 XHR 发过去服务端不认这一步，短信压根发不出来。
+        """
+        flow = self._flow([_FakeResponse(payload={"page": {"type": "contact_verification"}})])
+
+        flow.send_phone_otp("+56971901026")
+
+        call = flow.session.calls[0]
+        headers = call["headers"]
+        self.assertEqual(call["method"], "GET")
+        self.assertIn("text/html", headers["accept"])
+        self.assertEqual(headers["sec-fetch-dest"], "document")
+        self.assertEqual(headers["sec-fetch-mode"], "navigate")
+        self.assertEqual(headers["sec-fetch-site"], "same-origin")
+        self.assertEqual(headers["upgrade-insecure-requests"], "1")
+        self.assertEqual(headers["Referer"], "https://auth.openai.com/create-account/password")
+        self.assertNotIn("Origin", headers)
+        self.assertNotIn("Content-Type", headers)
+        # 302 之后才落到 /contact-verification，不跟就等于没发
+        self.assertTrue(call["kwargs"].get("allow_redirects"))
+        # 用户没点任何东西，这是脚本发起的跳转
+        self.assertNotIn("sec-fetch-user", headers)
+
+    def test_html_landing_page_becomes_the_next_step(self):
+        """导航版回的是 HTML，没有 JSON —— 落点 URL 就是服务端给的下一步。"""
+        flow = self._flow([
+            _FakeResponse(
+                text="<html>enter the code we sent</html>",
+                url="https://auth.openai.com/contact-verification?flow=x",
+            )
+        ])
+
+        result = flow.send_phone_otp("+56971901026")
+
+        self.assertEqual(
+            result, {"continue_url": "https://auth.openai.com/contact-verification"}
+        )
+
+    def test_html_landing_page_does_not_trigger_a_channel_warning(self):
+        """页面上列着 WhatsApp/语音这些别的选项，不代表这次的码是那么发的。"""
+        flow = self._flow([
+            _FakeResponse(
+                text="<html>Send via WhatsApp instead, or use a voice call</html>",
+                url="https://auth.openai.com/contact-verification",
+            )
+        ])
+
+        with self.assertLogs("platforms.chatgpt.protocol.phone_flow", level="INFO") as logs:
+            flow.send_phone_otp("+56971901026")
+
+        self.assertNotIn("WhatsApp", "\n".join(logs.output))
+
+    def test_post_fallbacks_still_go_out_as_xhr(self):
+        flow = self._flow([
+            _FakeResponse(status_code=405, text="method not allowed"),
+            _FakeResponse(payload={"page": {"type": "phone_otp_verification"}}),
+        ])
+
+        flow.send_phone_otp("+56971901026")
+
+        post = flow.session.calls[1]
+        self.assertEqual(post["method"], "POST")
+        self.assertEqual(post["headers"]["Content-Type"], "application/json")
+        self.assertEqual(post["headers"]["Origin"], "https://auth.openai.com")
 
     def test_falls_back_through_the_other_send_endpoints(self):
         flow = self._flow([
