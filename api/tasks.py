@@ -28,12 +28,28 @@ _task_store = RegisterTaskStore(
 )
 
 
+MAX_REGISTER_RETRY_TIMES = 10
+DEFAULT_REGISTER_RETRY_TIMES = 1
+
+
+def normalize_register_retry_times(value) -> int:
+    """空值按默认算，越界夹回去 —— 这个数字来自表单和配置项，什么都可能填。"""
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_REGISTER_RETRY_TIMES
+    return max(0, min(parsed, MAX_REGISTER_RETRY_TIMES))
+
+
 class RegisterTaskRequest(BaseModel):
     platform: str
     email: Optional[str] = None
     password: Optional[str] = None
     count: int = 1
     concurrency: int = 1
+    # 整条注册流程失败后再开几轮（每轮都是全新的邮箱/号码/会话）。
+    # 0 = 不重试；一次网络抖动、一个二手号就判 FAIL 太浪费。
+    register_retry_times: int = DEFAULT_REGISTER_RETRY_TIMES
     register_delay_seconds: float = 0
     proxy: Optional[str] = None
     executor_type: str = "protocol"
@@ -460,11 +476,35 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                 proxy=proxy,
             )
 
+        total_rounds = 1 + normalize_register_retry_times(req.register_retry_times)
+
         def _do_one(i: int):
+            """一个序号的完整交付：失败就整流程重开一轮，直到轮次用尽。
+
+            重开的是整条链（新代理、新邮箱/号码、新会话），不是接码层的换号 ——
+            半路建出来的号已经被占了，拿它死磕只会一直撞同一堵墙。
+            """
+            result = _do_one_round(i, 1, total_rounds)
+            for round_no in range(2, total_rounds + 1):
+                if result.outcome != AttemptOutcome.FAILED:
+                    return result
+                if control.is_stop_requested():
+                    return result
+                _log(
+                    task_id,
+                    f"[RETRY] 第 {i + 1} 个账号第 {round_no - 1}/{total_rounds} 轮失败，"
+                    f"重开第 {round_no}/{total_rounds} 轮（全新会话）: {result.message}",
+                )
+                result = _do_one_round(i, round_no, total_rounds)
+            return result
+
+        def _do_one_round(i: int, round_no: int, rounds: int):
             nonlocal next_start_time
             _proxy = None
             current_email = req.email or ""
             attempt_id: int | None = None
+            is_last_round = round_no >= rounds
+            round_suffix = f"（第 {round_no}/{rounds} 轮）" if rounds > 1 else ""
             try:
                 control.checkpoint()
                 attempt_id = control.start_attempt()
@@ -505,7 +545,7 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                     _platform.mailbox._log_fn = _platform._log_fn
                 _task_store.set_progress(task_id, f"{i + 1}/{req.count}")
                 _persist_task_snapshot(task_id)
-                _log(task_id, f"开始注册第 {i + 1}/{req.count} 个账号")
+                _log(task_id, f"开始注册第 {i + 1}/{req.count} 个账号{round_suffix}")
                 if _proxy:
                     _log(task_id, f"使用代理: {_proxy}")
                 account = _platform.register(
@@ -585,13 +625,16 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
             except Exception as e:
                 if _proxy:
                     _proxy_pool.report_fail(_proxy)
-                _log(task_id, f"[FAIL] 注册失败: {e}")
-                _save_task_log(
-                    req.platform,
-                    current_email,
-                    "failed",
-                    error=str(e),
-                )
+                _log(task_id, f"[FAIL] 注册失败{round_suffix}: {e}")
+                # 中间轮次的失败只写任务日志：注册记录按"一个序号一条结果"记，
+                # 否则重试成功了还会在统计里留下一条失败
+                if is_last_round:
+                    _save_task_log(
+                        req.platform,
+                        current_email,
+                        "failed",
+                        error=str(e),
+                    )
                 return AttemptResult.failed(str(e))
             finally:
                 control.finish_attempt(attempt_id)

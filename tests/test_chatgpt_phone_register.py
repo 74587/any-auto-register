@@ -290,6 +290,7 @@ class _FakeController:
         }
         self.rented = []
         self.refunds = []
+        self.reuse_stopped = []
         self.cleanups = 0
         self.successes = 0
 
@@ -306,6 +307,9 @@ class _FakeController:
 
     def mark_send_succeeded(self):
         pass
+
+    def stop_reuse(self, reason=""):
+        self.reuse_stopped.append(reason)
 
     def mark_code_failed(self, reason=""):
         pass
@@ -542,6 +546,8 @@ class PhoneRegisterLoopTests(unittest.TestCase):
         # 也不把号上报成"有问题"去要退款
         self.assertEqual(len(ctrl.rented), 1)
         self.assertEqual(ctrl.refunds, [])
+        # 外层整流程重试时必须换新号：这个号已经挂在半成品账号上了
+        self.assertEqual(len(ctrl.reuse_stopped), 1)
         self.assertEqual(ctx.exception.phone, ctrl.rented[0])
         self.assertEqual(ctx.exception.password, "pw-live")
         self.assertIn("Invalid authorization step.", str(ctx.exception))

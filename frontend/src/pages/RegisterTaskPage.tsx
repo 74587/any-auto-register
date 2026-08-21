@@ -33,6 +33,10 @@ import {
   getPlatformMeta,
   normalizeExecutorForPlatform,
 } from '@/lib/platforms'
+import {
+  DEFAULT_REGISTER_RETRY_TIMES,
+  normalizeRegisterRetryTimes,
+} from '@/lib/registerRetry'
 import { apiFetch } from '@/lib/utils'
 
 const { Text } = Typography
@@ -66,6 +70,7 @@ export default function RegisterTaskPage() {
       form.setFieldsValue({
         executor_type: normalizeExecutorForPlatform(currentPlatform, cfg.default_executor),
         captcha_solver: cfg.default_captcha_solver || 'yescaptcha',
+        register_retry_times: normalizeRegisterRetryTimes(cfg.register_retry_times),
         mail_provider: isMailImportProvider ? 'mail_import' : configMailProvider,
         mail_import_source: configMailProvider === 'applemail' ? 'applemail' : 'microsoft',
         applemail_base_url: cfg.applemail_base_url || 'https://www.appleemail.top',
@@ -203,6 +208,7 @@ export default function RegisterTaskPage() {
         password: values.password || null,
         count: values.count,
         concurrency: values.concurrency,
+        register_retry_times: normalizeRegisterRetryTimes(values.register_retry_times),
         register_delay_seconds: values.register_delay_seconds || 0,
         proxy: values.proxy || null,
         executor_type: values.executor_type,
@@ -268,6 +274,7 @@ export default function RegisterTaskPage() {
         cloudmail_timeout: 30,
         count: 1,
         concurrency: 1,
+        register_retry_times: DEFAULT_REGISTER_RETRY_TIMES,
         register_delay_seconds: 0,
         maliapi_base_url: 'https://maliapi.215.im/v1',
         maliapi_auto_domain_strategy: 'balanced',
@@ -300,6 +307,14 @@ export default function RegisterTaskPage() {
             </Form.Item>
             <Form.Item name="concurrency" label="并发数" style={{ flex: 1 }}>
               <Input type="number" min={1} />
+            </Form.Item>
+            <Form.Item
+              name="register_retry_times"
+              label="失败重试轮数"
+              tooltip="整条注册流程失败后自动重开一轮：换新邮箱 / 新号码 / 新会话。0 表示失败即止；和接码里的「最多换号」不是一回事。"
+              style={{ flex: 1 }}
+            >
+              <InputNumber min={0} max={10} precision={0} style={{ width: '100%' }} placeholder="1" />
             </Form.Item>
           </Space>
           <Space style={{ width: '100%' }}>

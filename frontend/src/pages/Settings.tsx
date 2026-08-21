@@ -98,7 +98,14 @@ const TAB_ITEMS = [
       {
         title: '默认注册方式',
         desc: '控制注册任务如何执行',
-        fields: [{ key: 'default_executor', label: '执行器类型', type: 'select' }],
+        fields: [
+          { key: 'default_executor', label: '执行器类型', type: 'select' },
+          {
+            key: 'register_retry_times',
+            label: '整流程失败重试轮数',
+            placeholder: '1（0 表示失败即止）',
+          },
+        ],
       },
     ],
   },

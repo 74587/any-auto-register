@@ -264,6 +264,21 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         self.assertEqual(req.call_args.args[0]["status"], 8)
         self.assertIsNone(sms_service._SMS_CACHE)
 
+    def test_stop_reuse_drops_the_cached_number_without_refunding(self):
+        """号已经注册出账号了：不能再复用，但它是好号，不该去要退款。"""
+        provider = SmsActivateProvider(api_key="k", reuse_phone_to_max=True)
+        info = {"activationId": "9001", "phoneNumber": "66123", "countryPhoneCode": "66"}
+
+        with mock.patch.object(provider, "_request_number", return_value=info), \
+                mock.patch.object(provider, "_request", return_value=_Resp("ACCESS_READY")) as req:
+            provider.get_number(service="dr", country_candidates=["52"])
+            provider.stop_reuse("9001", reason="已注册出账号")
+
+        self.assertIsNone(sms_service._SMS_CACHE)
+        self.assertFalse(
+            [call for call in req.call_args_list if call.args[0].get("status") == 8]
+        )
+
     def test_status_v2_extracts_code_from_channel_payload(self):
         provider = SmsActivateProvider(api_key="k")
         with mock.patch.object(

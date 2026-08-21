@@ -103,6 +103,9 @@ class BaseSmsProvider(ABC):
     def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
         """业务侧拒绝该手机号（add-phone/send 返错）→ 停止复用并退款。"""
 
+    def stop_reuse(self, activation_id: str, reason: str = "") -> None:
+        """号已经被业务侧占用（注册出账号了）→ 不再复用，但也不退款。"""
+
     def mark_send_succeeded(self, activation_id: str) -> None:
         """业务侧已成功触发短信发送（add-phone/send 200）。"""
 
@@ -750,6 +753,15 @@ class SmsActivateProvider(BaseSmsProvider):
         except Exception:
             pass
 
+    def stop_reuse(self, activation_id: str, reason: str = "") -> None:
+        with _SMS_CACHE_LOCK:
+            cache = _SMS_CACHE
+            if cache and str(cache.get("activation_id")) == str(activation_id):
+                cache["reuse_stopped"] = True
+                cache["stop_reason"] = reason or "号码已被业务侧占用"
+                self._save_cache(cache)
+                self._clear_cache()
+
     def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
         # 业务侧拒了这个号 → cancel 退款，号根本没用上，不能白花钱
         cancelled = False
@@ -963,6 +975,13 @@ class PhoneCallbackController:
         if self.activation and self.provider:
             try:
                 self.provider.mark_send_failed(self.activation.activation_id, reason=reason)
+            except Exception:
+                pass
+
+    def stop_reuse(self, reason: str = "") -> None:
+        if self.activation and self.provider:
+            try:
+                self.provider.stop_reuse(self.activation.activation_id, reason=reason)
             except Exception:
                 pass
 
