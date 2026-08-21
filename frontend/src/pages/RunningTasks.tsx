@@ -47,6 +47,7 @@ const SOURCE_LABELS: Record<string, string> = {
   api: 'API',
   schedule: '调度',
   backfill_rt: '补 RT',
+  bind_2fa: '绑 2FA',
 }
 
 const STATUS_CONFIG: Record<string, { color: string; label: string; icon?: React.ReactNode }> = {

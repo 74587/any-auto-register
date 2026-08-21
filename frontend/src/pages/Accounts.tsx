@@ -37,6 +37,7 @@ import { ChatGPTBind2faSwitch } from '@/components/ChatGPTBind2faSwitch'
 import { ChatGPTRegisterFlowSelect } from '@/components/ChatGPTRegisterFlowSelect'
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
+import type { TaskKind } from '@/components/TaskLogPanel'
 import { usePersistentChatGPTBind2fa } from '@/hooks/usePersistentChatGPTBind2fa'
 import { usePersistentChatGPTRegisterFlow } from '@/hooks/usePersistentChatGPTRegisterFlow'
 import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatGPTRegistrationMode'
@@ -61,6 +62,24 @@ const STATUS_COLORS: Record<string, string> = {
 
 // 纯前端动作，不发请求，所以不和后端的 action id 抢命名空间
 const COPY_TOTP_ACTION_ID = '__copy_totp_secret'
+
+// 这些动作要跑几十秒的协议链（还可能停下来等一封验证码），同步等只能看见一个
+// 转圈。改走后台任务，和注册一样用日志弹窗把每一步显示出来。
+const TASK_BACKED_ACTIONS: Record<
+  string,
+  { endpoint: string; kind: TaskKind; body: (accountId: number) => Record<string, unknown> }
+> = {
+  backfill_refresh_token: {
+    endpoint: '/tasks/backfill-rt',
+    kind: 'backfill_rt',
+    body: (accountId) => ({ account_ids: [accountId], only_missing_rt: false, delay_seconds: 0 }),
+  },
+  bind_2fa: {
+    endpoint: '/tasks/bind-2fa',
+    kind: 'bind_2fa',
+    body: (accountId) => ({ account_ids: [accountId], only_missing_2fa: false, delay_seconds: 0 }),
+  },
+}
 
 function parseExtraJson(raw: string | undefined) {
   if (!raw) return {}
@@ -413,6 +432,29 @@ function CliproxySyncSummary({ sync }: { sync: any }) {
   )
 }
 
+function TotpSecretAlert({ secret }: { secret: string }) {
+  return (
+    <Alert
+      type="warning"
+      showIcon
+      message="TOTP 密钥只下发这一次，服务端取不回"
+      description={
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Text
+            style={{ fontFamily: 'monospace', fontSize: 13, wordBreak: 'break-all' }}
+            copyable={{ text: secret, tooltips: ['复制密钥', '已复制'] }}
+          >
+            {secret}
+          </Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            已随账号存库，之后可在账号详情或列表的「2FA 已绑」标签上再复制。
+          </Text>
+        </Space>
+      }
+    />
+  )
+}
+
 function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => void; actions: any[] }) {
   const [resultOpen, setResultOpen] = useState(false)
   const [resultTitle, setResultTitle] = useState('')
@@ -424,6 +466,7 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
   const [resultSecret, setResultSecret] = useState('')
   const [runningActionId, setRunningActionId] = useState<string | null>(null)
   const [taskModalTitle, setTaskModalTitle] = useState('')
+  const [taskModalKind, setTaskModalKind] = useState<TaskKind>('backfill_rt')
   const [actionTaskId, setActionTaskId] = useState<string | null>(null)
 
   const showResult = (
@@ -455,16 +498,16 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
     }
   }
 
-  // 补 RT 要跑几十秒的授权链，同步等只能看见一个转圈。改走后台任务，
-  // 和注册一样用日志弹窗把每一步显示出来。
-  const runAsTask = async (actionLabel: string) => {
-    setRunningActionId('backfill_refresh_token')
+  const runAsTask = async (actionId: string, actionLabel: string) => {
+    const task = TASK_BACKED_ACTIONS[actionId]
+    setRunningActionId(actionId)
     try {
-      const result = await apiFetch('/tasks/backfill-rt', {
+      const result = await apiFetch(task.endpoint, {
         method: 'POST',
-        body: JSON.stringify({ account_ids: [acc.id], only_missing_rt: false, delay_seconds: 0 }),
+        body: JSON.stringify(task.body(acc.id)),
       })
       setTaskModalTitle(`${actionLabel} - ${acc.email}`)
+      setTaskModalKind(task.kind)
       setActionTaskId(result.task_id)
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e)
@@ -489,8 +532,8 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
       return
     }
 
-    if (actionId === 'backfill_refresh_token') {
-      await runAsTask(actionLabel)
+    if (TASK_BACKED_ACTIONS[actionId]) {
+      await runAsTask(actionId, actionLabel)
       return
     }
 
@@ -586,7 +629,12 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
         width={620}
         maskClosable={false}
       >
-        {actionTaskId ? <TaskLogPanel taskId={actionTaskId} kind="backfill_rt" onDone={onRefresh} /> : null}
+        {taskModalKind === 'bind_2fa' && acc.totpSecret ? (
+          <div style={{ marginBottom: 12 }}>
+            <TotpSecretAlert secret={acc.totpSecret} />
+          </div>
+        ) : null}
+        {actionTaskId ? <TaskLogPanel taskId={actionTaskId} kind={taskModalKind} onDone={onRefresh} /> : null}
       </Modal>
       <Modal
         title={resultTitle}
@@ -631,24 +679,7 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
         ) : null}
         {resultSecret ? (
           <div style={{ marginBottom: 12 }}>
-            <Alert
-              type="warning"
-              showIcon
-              message="TOTP 密钥只下发这一次，服务端取不回"
-              description={
-                <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                  <Text
-                    style={{ fontFamily: 'monospace', fontSize: 13, wordBreak: 'break-all' }}
-                    copyable={{ text: resultSecret, tooltips: ['复制密钥', '已复制'] }}
-                  >
-                    {resultSecret}
-                  </Text>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    已随账号存库，之后可在账号详情或列表的「2FA 已绑」标签上再复制。
-                  </Text>
-                </Space>
-              }
-            />
+            <TotpSecretAlert secret={resultSecret} />
           </div>
         ) : null}
         {resultUrl ? (

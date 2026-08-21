@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
+from sqlmodel import Session
+
+from core.db import AccountModel
 from platforms.chatgpt.protocol import AuthFlow, Config
 from platforms.chatgpt.protocol.two_factor import (
     TwoFactorBindResult,
@@ -25,8 +28,43 @@ from platforms.chatgpt.protocol.two_factor import (
     bind_totp_via_login,
 )
 from platforms.chatgpt.protocol_log_relay import mirror_protocol_logs
+from services.chatgpt_account_selection import select_chatgpt_accounts
 
 logger = logging.getLogger(__name__)
+
+
+def account_totp_secret(model: AccountModel) -> str:
+    return str(model.get_extra().get("totp_secret") or "").strip()
+
+
+def account_missing_two_factor(model: AccountModel) -> bool:
+    return not account_totp_secret(model)
+
+
+def select_two_factor_targets(
+    session: Session,
+    *,
+    account_ids: Optional[Iterable[int]] = None,
+    all_filtered: bool = False,
+    email: str = "",
+    status: str = "",
+    plus_status: str = "",
+    only_missing_2fa: bool = True,
+) -> tuple[list[AccountModel], list[int]]:
+    """挑出要绑 2FA 的号，返回 ``(账号列表, 找不到的 id)``。
+
+    ``only_missing_2fa`` 是默认行为：库里已经有密钥的号再 enroll 一遍只会把用户
+    手上的验证器废掉。手动对单个号操作时可以关掉，让它把"已绑"这个结论也跑出来。
+    """
+    return select_chatgpt_accounts(
+        session,
+        account_ids=account_ids,
+        all_filtered=all_filtered,
+        email=email,
+        status=status,
+        plus_status=plus_status,
+        keep=account_missing_two_factor if only_missing_2fa else None,
+    )
 
 
 def bind_account_two_factor(
@@ -117,6 +155,26 @@ def build_extra_patch(result: TwoFactorBindResult) -> dict[str, Any]:
         "message": result.summary(),
         "at": datetime.now(timezone.utc).isoformat(),
     }
+    return patch
+
+
+def apply_two_factor_result(
+    model: AccountModel,
+    result: TwoFactorBindResult,
+    *,
+    session: Optional[Session] = None,
+    commit: bool = False,
+) -> dict[str, Any]:
+    """把绑定结果落到账号行上，返回实际写入的补丁。"""
+    patch = build_extra_patch(result)
+    extra = model.get_extra()
+    extra.update(patch)
+    model.set_extra(extra)
+    model.updated_at = datetime.now(timezone.utc)
+    if session is not None:
+        session.add(model)
+        if commit:
+            session.commit()
     return patch
 
 

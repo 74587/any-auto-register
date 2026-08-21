@@ -2,7 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
-from typing import Optional
+from typing import Callable, Optional
 from copy import deepcopy
 from datetime import datetime, timezone
 from core.db import TaskLog, TaskRunModel, engine
@@ -75,6 +75,25 @@ class BackfillRtTaskRequest(BaseModel):
     status: str = ""
     plus_status: str = ""
     only_missing_rt: bool = True
+    allow_login: bool = True
+    concurrency: int = 1
+    delay_seconds: float = 5
+    proxy: Optional[str] = None
+
+
+class Bind2faTaskRequest(BaseModel):
+    """批量绑 2FA 的任务参数。
+
+    和补 RT 一样默认串行 + 间隔几秒：绑定链要连着打 OpenAI 的登录/enroll 接口，
+    并发拉满只会更快撞上风控。
+    """
+
+    account_ids: list[int] = Field(default_factory=list)
+    all_filtered: bool = False
+    email: str = ""
+    status: str = ""
+    plus_status: str = ""
+    only_missing_2fa: bool = True
     allow_login: bool = True
     concurrency: int = 1
     delay_seconds: float = 5
@@ -718,13 +737,43 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
     _task_store.cleanup()
 
 
-def _run_backfill_rt(task_id: str, account_ids: list[int], req: BackfillRtTaskRequest):
-    """批量补 RT。逐号跑，可停可跳，进度和日志复用注册任务那套。"""
-    from core.config_store import config_store
+def _load_account_fields(account_id: int) -> Optional[dict]:
+    """把一行账号读成纯数据。
+
+    后面那几十秒网络请求期间不能占着数据库连接不放：连接池就那么几条，攥在手里
+    会把面板其它请求一起拖住。
+    """
     from core.db import AccountModel
+
+    with Session(engine) as s:
+        account = s.get(AccountModel, account_id)
+        if account is None or account.platform != "chatgpt":
+            return None
+        return {
+            "email": account.email,
+            "password": account.password,
+            "extra": account.get_extra(),
+            "token": account.token,
+        }
+
+
+def _run_account_batch_task(
+    task_id: str,
+    account_ids: list[int],
+    *,
+    label: str,
+    concurrency: int = 1,
+    delay_seconds: float = 0,
+    proxy: Optional[str] = None,
+    handle_account: Callable[..., AttemptResult],
+) -> None:
+    """「逐个号跑一遍」这类后台任务的调度骨架（补 RT、绑 2FA 都走这里）。
+
+    排队限速、可停可跳、计数收尾这些每个批量任务都一样，只有每个号具体做什么
+    不同 —— 那部分由 ``handle_account`` 提供，进度和日志复用注册任务那套。
+    """
     from core.proxy_pool import proxy_pool
     from core.proxy_utils import normalize_proxy_url
-    from services.chatgpt_rt_backfill import apply_backfill_result, backfill_account_data
 
     control = _task_store.control_for(task_id)
     _task_store.mark_running(task_id)
@@ -737,91 +786,58 @@ def _run_backfill_rt(task_id: str, account_ids: list[int], req: BackfillRtTaskRe
     stopped = False
     start_gate = threading.Lock()
     next_start_time = time.time()
-    base_config = config_store.get_all() or {}
 
     def _resolve_proxy() -> Optional[str]:
-        if req.proxy:
-            return normalize_proxy_url(req.proxy)
+        if proxy:
+            return normalize_proxy_url(proxy)
         return normalize_proxy_url(proxy_pool.get_next())
 
     def _wait_turn(attempt_id: int | None) -> None:
         nonlocal next_start_time
-        if req.delay_seconds <= 0:
+        if delay_seconds <= 0:
             return
         with start_gate:
             control.checkpoint(attempt_id=attempt_id)
-            wait_seconds = max(0.0, next_start_time - time.time())
-            remaining = wait_seconds
+            remaining = max(0.0, next_start_time - time.time())
             while remaining > 0:
                 control.checkpoint(attempt_id=attempt_id)
                 chunk = min(0.25, remaining)
                 time.sleep(chunk)
                 remaining -= chunk
-            next_start_time = time.time() + req.delay_seconds
+            next_start_time = time.time() + delay_seconds
 
     def _do_one(index: int, account_id: int) -> AttemptResult:
         attempt_id: int | None = None
-        email = ""
         try:
             control.checkpoint()
             attempt_id = control.start_attempt()
             _wait_turn(attempt_id)
             control.checkpoint(attempt_id=attempt_id)
 
-            proxy = _resolve_proxy()
-            # 补一个号要跑好几十秒的网络请求，期间不能占着数据库连接不放：
-            # 连接池就那么几条，攥在手里会把面板其它请求一起拖住。
-            with Session(engine) as s:
-                account = s.get(AccountModel, account_id)
-                if account is None or account.platform != "chatgpt":
-                    _log(task_id, f"[SKIP] 账号 #{account_id} 不存在")
-                    return AttemptResult.skipped("账号不存在")
-                email = account.email
-                password = account.password
-                extra = account.get_extra()
-                token = account.token
+            account_proxy = _resolve_proxy()
+            fields = _load_account_fields(account_id)
+            if fields is None:
+                _log(task_id, f"[SKIP] 账号 #{account_id} 不存在")
+                return AttemptResult.skipped("账号不存在")
 
             _task_store.set_progress(task_id, f"{index + 1}/{total}")
-            _log(task_id, f"开始补 RT {index + 1}/{total}: {email}")
-            if proxy:
-                _log(task_id, f"使用代理: {proxy}")
+            _log(task_id, f"开始{label} {index + 1}/{total}: {fields['email']}")
+            if account_proxy:
+                _log(task_id, f"使用代理: {account_proxy}")
 
-            result = backfill_account_data(
-                email=email,
-                password=password,
-                extra=extra,
-                token=token,
-                config=base_config,
-                proxy=proxy,
-                allow_login=req.allow_login,
-                log_fn=lambda msg: _log(task_id, f"  {msg}"),
-                task_control=control,
+            result = handle_account(
+                account_id=account_id,
+                fields=fields,
+                proxy=account_proxy,
+                control=control,
                 attempt_id=attempt_id,
             )
-
-            with Session(engine) as s:
-                account = s.get(AccountModel, account_id)
-                if account is not None:
-                    apply_backfill_result(account, result, session=s, commit=True)
-
-            if result.success:
-                if proxy:
-                    proxy_pool.report_success(proxy)
-                _log(task_id, f"[OK] {email} {result.summary()}")
-                _save_task_log("chatgpt", email, "success", detail={"action": "backfill_rt"})
-                return AttemptResult.success()
-
-            if proxy:
-                proxy_pool.report_fail(proxy)
-            _log(task_id, f"[FAIL] {email} {result.summary()}")
-            _save_task_log(
-                "chatgpt",
-                email,
-                "failed",
-                error=result.summary(),
-                detail={"action": "backfill_rt"},
-            )
-            return AttemptResult.failed(f"{email}: {result.summary()}")
+            if account_proxy:
+                if result.outcome == AttemptOutcome.FAILED:
+                    proxy_pool.report_fail(account_proxy)
+                elif result.outcome == AttemptOutcome.SUCCESS:
+                    proxy_pool.report_success(account_proxy)
+            return result
         except SkipCurrentAttemptRequested as e:
             _log(task_id, f"[SKIP] 已跳过当前账号: {e}")
             return AttemptResult.skipped(str(e))
@@ -829,7 +845,7 @@ def _run_backfill_rt(task_id: str, account_ids: list[int], req: BackfillRtTaskRe
             _log(task_id, f"[STOP] {e}")
             return AttemptResult.stopped(str(e))
         except Exception as e:
-            _log(task_id, f"[FAIL] {email or f'#{account_id}'} 补 RT 异常: {e}")
+            _log(task_id, f"[FAIL] 账号 #{account_id} {label}异常: {e}")
             return AttemptResult.failed(str(e))
         finally:
             control.finish_attempt(attempt_id)
@@ -837,7 +853,7 @@ def _run_backfill_rt(task_id: str, account_ids: list[int], req: BackfillRtTaskRe
     try:
         from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 
-        max_workers = max(1, min(int(req.concurrency or 1), max(total, 1)))
+        max_workers = max(1, min(int(concurrency or 1), max(total, 1)))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [
                 pool.submit(_do_one, index, account_id)
@@ -887,7 +903,7 @@ def _run_backfill_rt(task_id: str, account_ids: list[int], req: BackfillRtTaskRe
         return
 
     final_status = "stopped" if control.is_stop_requested() or stopped else "done"
-    prefix = "补 RT 已停止" if final_status == "stopped" else "补 RT 完成"
+    prefix = f"{label}已停止" if final_status == "stopped" else f"{label}完成"
     _log(task_id, f"{prefix}: 成功 {success} 个, 跳过 {skipped} 个, 失败 {len(errors)} 个")
     _task_store.finish(
         task_id,
@@ -899,6 +915,121 @@ def _run_backfill_rt(task_id: str, account_ids: list[int], req: BackfillRtTaskRe
     )
     _persist_task_snapshot(task_id)
     _task_store.cleanup()
+
+
+def _run_backfill_rt(task_id: str, account_ids: list[int], req: BackfillRtTaskRequest):
+    """批量补 RT。逐号跑，可停可跳，进度和日志复用注册任务那套。"""
+    from core.config_store import config_store
+    from core.db import AccountModel
+    from services.chatgpt_rt_backfill import apply_backfill_result, backfill_account_data
+
+    base_config = config_store.get_all() or {}
+
+    def _handle(*, account_id, fields, proxy, control, attempt_id) -> AttemptResult:
+        email = fields["email"]
+        result = backfill_account_data(
+            email=email,
+            password=fields["password"],
+            extra=fields["extra"],
+            token=fields["token"],
+            config=base_config,
+            proxy=proxy,
+            allow_login=req.allow_login,
+            log_fn=lambda msg: _log(task_id, f"  {msg}"),
+            task_control=control,
+            attempt_id=attempt_id,
+        )
+
+        with Session(engine) as s:
+            account = s.get(AccountModel, account_id)
+            if account is not None:
+                apply_backfill_result(account, result, session=s, commit=True)
+
+        if result.success:
+            _log(task_id, f"[OK] {email} {result.summary()}")
+            _save_task_log("chatgpt", email, "success", detail={"action": "backfill_rt"})
+            return AttemptResult.success()
+
+        _log(task_id, f"[FAIL] {email} {result.summary()}")
+        _save_task_log(
+            "chatgpt",
+            email,
+            "failed",
+            error=result.summary(),
+            detail={"action": "backfill_rt"},
+        )
+        return AttemptResult.failed(f"{email}: {result.summary()}")
+
+    _run_account_batch_task(
+        task_id,
+        account_ids,
+        label="补 RT",
+        concurrency=req.concurrency,
+        delay_seconds=req.delay_seconds,
+        proxy=req.proxy,
+        handle_account=_handle,
+    )
+
+
+def _run_bind_2fa(task_id: str, account_ids: list[int], req: Bind2faTaskRequest):
+    """批量绑 2FA。和补 RT 同一套调度，区别只在每个号跑什么。"""
+    from core.config_store import config_store
+    from core.db import AccountModel
+    from services.chatgpt_two_factor import apply_two_factor_result, bind_account_two_factor
+
+    base_config = config_store.get_all() or {}
+
+    def _handle(*, account_id, fields, proxy, control, attempt_id) -> AttemptResult:
+        email = fields["email"]
+        result = bind_account_two_factor(
+            email=email,
+            password=fields["password"],
+            extra=fields["extra"],
+            token=fields["token"],
+            config=base_config,
+            proxy=proxy,
+            allow_login=req.allow_login,
+            log_fn=lambda msg: _log(task_id, f"  {msg}"),
+            task_control=control,
+            attempt_id=attempt_id,
+        )
+
+        with Session(engine) as s:
+            account = s.get(AccountModel, account_id)
+            if account is not None:
+                apply_two_factor_result(account, result, session=s, commit=True)
+
+        if result.ok:
+            _log(task_id, f"[OK] {email} {result.summary()}")
+            # 密钥只下发这一次，任务日志是用户当场导入验证器的唯一途径
+            if result.secret:
+                _log(task_id, f"  TOTP 密钥: {result.secret}")
+            _save_task_log("chatgpt", email, "success", detail={"action": "bind_2fa"})
+            return AttemptResult.success()
+
+        if result.already_bound:
+            _log(task_id, f"[SKIP] {email} {result.summary()}")
+            return AttemptResult.skipped(f"{email}: {result.summary()}")
+
+        _log(task_id, f"[FAIL] {email} {result.summary()}")
+        _save_task_log(
+            "chatgpt",
+            email,
+            "failed",
+            error=result.summary(),
+            detail={"action": "bind_2fa"},
+        )
+        return AttemptResult.failed(f"{email}: {result.summary()}")
+
+    _run_account_batch_task(
+        task_id,
+        account_ids,
+        label="绑 2FA",
+        concurrency=req.concurrency,
+        delay_seconds=req.delay_seconds,
+        proxy=req.proxy,
+        handle_account=_handle,
+    )
 
 
 @router.post("/backfill-rt")
@@ -950,6 +1081,58 @@ def create_backfill_rt_task(req: BackfillRtTaskRequest, background_tasks: Backgr
     if missing_ids:
         _log(task_id, f"忽略不存在的账号: {missing_ids}")
     background_tasks.add_task(_run_backfill_rt, task_id, account_ids, req)
+    return {"task_id": task_id, "total": len(account_ids), "missing_ids": missing_ids}
+
+
+@router.post("/bind-2fa")
+def create_bind_2fa_task(req: Bind2faTaskRequest, background_tasks: BackgroundTasks):
+    """给库里已有的 ChatGPT 账号补绑 TOTP 2FA。"""
+    from services.chatgpt_two_factor import select_two_factor_targets
+
+    with Session(engine) as s:
+        try:
+            accounts, missing_ids = select_two_factor_targets(
+                s,
+                account_ids=req.account_ids,
+                all_filtered=req.all_filtered,
+                email=req.email,
+                status=req.status,
+                plus_status=req.plus_status,
+                only_missing_2fa=req.only_missing_2fa,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        account_ids = [int(row.id) for row in accounts if row.id]
+
+    if not account_ids:
+        if missing_ids:
+            detail = "所选账号不存在"
+        elif req.only_missing_2fa:
+            detail = "所选账号都已经有 2FA 密钥了"
+        else:
+            detail = "没有匹配的账号"
+        raise HTTPException(400, detail)
+
+    task_id = f"bind_2fa_{int(time.time() * 1000)}"
+    _task_store.create(
+        task_id,
+        platform="chatgpt",
+        total=len(account_ids),
+        source="bind_2fa",
+        meta={
+            "kind": "bind_2fa",
+            "only_missing_2fa": req.only_missing_2fa,
+            "allow_login": req.allow_login,
+            "concurrency": req.concurrency,
+            "delay_seconds": req.delay_seconds,
+            "missing_ids": missing_ids,
+        },
+    )
+    _persist_task_snapshot(task_id)
+    _log(task_id, f"待绑 2FA 账号 {len(account_ids)} 个")
+    if missing_ids:
+        _log(task_id, f"忽略不存在的账号: {missing_ids}")
+    background_tasks.add_task(_run_bind_2fa, task_id, account_ids, req)
     return {"task_id": task_id, "total": len(account_ids), "missing_ids": missing_ids}
 
 

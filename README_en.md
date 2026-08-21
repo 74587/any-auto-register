@@ -155,7 +155,7 @@ The register task page and the ChatGPT register dialog also carry a **绑定 2FA
 
 The secret is stored with the account (in `extra` under `totp_secret`) and can be copied into an authenticator app from three places: the **2FA 已绑** tag in the list, **复制 2FA 密钥 (Copy 2FA secret)** in the account action menu, and the secret block in the account details. The dialog shown after a manual bind also spells the secret out with its own copy button, and it is printed once in the task log. For secrets in bulk, use an export format such as `email----password----2FA`.
 
-Existing accounts can be bound one at a time from the account action menu (**绑定 2FA**), which likewise tries session reuse first and falls back to a re-login.
+Existing accounts can be bound one at a time from the account action menu (**绑定 2FA**), which likewise tries session reuse first and falls back to a re-login. Like **补 RT (RT backfill)**, that action runs as a background task: a log window opens right away so you can watch which path it took and whether it is waiting on an emailed code, and stop it midway. On success the secret is printed in the log and repeated in a copyable block at the top of the window.
 
 > ⚠️ The server hands out the secret exactly once and no endpoint can retrieve it again. Binding takes effect immediately: every later login for that account needs a rotating code. RT backfill and re-login flows compute it automatically from the stored secret, but losing the secret locks you out of the account for good.
 
