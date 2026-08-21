@@ -146,6 +146,16 @@ class EnrollTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("secret", result.error_message)
 
+    def test_unusable_secret_is_reported_instead_of_raising(self):
+        flow = _FakeFlow(
+            _bind_responses(enroll={"secret": "not base32!", "session_id": "sess-1"})
+        )
+
+        result = enroll_totp(flow, "at-1")
+
+        self.assertFalse(result.ok)
+        self.assertIn("Base32", result.error_message)
+
     def test_activate_failure_keeps_the_secret_for_the_caller(self):
         flow = _FakeFlow(_bind_responses(activate_status=429))
 

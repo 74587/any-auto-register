@@ -33,13 +33,16 @@ from platforms.chatgpt.protocol.auth_flow import AuthFlow
 from platforms.chatgpt.protocol.config import Config
 from platforms.chatgpt.protocol.mail_provider import MailProvider
 from platforms.chatgpt.protocol.response_summary import describe_error
-from platforms.chatgpt.protocol.totp import totp_now, verify_totp
+from platforms.chatgpt.protocol.totp import totp_now
 
 logger = logging.getLogger(__name__)
 
 MFA_INFO_URL = "https://chatgpt.com/backend-api/accounts/mfa_info"
 MFA_ENROLL_URL = "https://chatgpt.com/backend-api/accounts/mfa/enroll"
 MFA_ACTIVATE_URL = "https://chatgpt.com/backend-api/accounts/mfa/user/activate_enrollment"
+
+# 登录链走到一半发现号早就绑过了。这不是失败，调用方要能和真失败分开。
+_ALREADY_BOUND = "该号已启用 2FA（登录直接进 mfa-challenge），无需重复绑定"
 
 
 @dataclass
@@ -89,10 +92,11 @@ def enroll_totp(flow: AuthFlow, access_token: str) -> TwoFactorBindResult:
     # 有了一个待激活的 totp factor，密钥丢了就再也补不回来。
     flow.result.totp_secret = secret
 
-    code = totp_now(secret)
-    if not verify_totp(secret, code):
+    try:
+        code = totp_now(secret)
+    except Exception as exc:  # noqa: BLE001
         return TwoFactorBindResult(
-            secret=secret, error_message="本地算出的动态码自检不通过，密钥可能不是合法 Base32"
+            secret=secret, error_message=f"enroll 给的密钥算不出动态码（不是合法 Base32）: {exc}"
         )
 
     activated = _activate(flow, token, code, enrollment["session_id"])
@@ -142,8 +146,10 @@ def bind_totp_via_login(
             env_overrides=dict(env_overrides or {}),
         )
         access_token, error = _login_for_access_token(flow, email, password, mail_provider)
+        if error == _ALREADY_BOUND:
+            return TwoFactorBindResult(already_bound=True)
         if error:
-            return TwoFactorBindResult(error_message=error, already_bound="已启用 2FA" in error)
+            return TwoFactorBindResult(error_message=error)
         return enroll_totp(flow, access_token)
     except Exception as exc:  # noqa: BLE001
         return TwoFactorBindResult(error_message=f"重新登录绑定异常: {exc}")
@@ -289,7 +295,7 @@ def _login_for_access_token(
     if not continue_url:
         return "", f"登录链没给出 continue_url（page={page_type or '未知'}）"
     if flow._is_mfa_challenge_state(page_type, continue_url):
-        return "", "该号已启用 2FA（登录直接进 mfa-challenge），无需重复绑定"
+        return "", _ALREADY_BOUND
 
     if not flow._consume_callback_for_session(continue_url):
         return "", "消费 callback 失败，拿不到会话"
