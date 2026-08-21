@@ -240,7 +240,19 @@ class FlowStateDetectionTests(unittest.TestCase):
         self.assertTrue(
             AuthFlow._is_phone_otp_state(continue_url="https://auth.openai.com/phone-verification")
         )
-        self.assertFalse(AuthFlow._is_phone_otp_state(page_type="email_otp_verification"))
+        self.assertFalse(AuthFlow._is_phone_otp_state(page_type="login_password"))
+
+    def test_contact_verification_is_the_sms_page(self):
+        """手机号注册发完码就停在 /contact-verification，这就是输验证码的地方。"""
+        self.assertTrue(AuthFlow._is_phone_otp_state(page_type="contact_verification"))
+        self.assertTrue(
+            AuthFlow._is_phone_otp_state(
+                continue_url="https://auth.openai.com/contact-verification"
+            )
+        )
+        # 别把它当成"还没发码"或"已经放行"
+        self.assertFalse(AuthFlow._is_phone_otp_send_state(page_type="contact_verification"))
+        self.assertFalse(AuthFlow._is_forward_state(page_type="contact_verification"))
 
     def test_phone_otp_send_state(self):
         self.assertTrue(AuthFlow._is_phone_otp_send_state(page_type="phone_otp_send"))
@@ -375,7 +387,7 @@ class PhoneRegisterLoopTests(unittest.TestCase):
             return {"page": {"type": "phone_otp_verification"}}
 
         flow.phone_register_user = _register
-        flow._phone_otp_validate = lambda code: {"continue_url": "https://auth.openai.com/about-you"}
+        flow._phone_otp_validate = lambda code, referer="": {"continue_url": "https://auth.openai.com/about-you"}
 
         continue_url, auth_url = flow._do_phone_register_loop(ctrl)
 
@@ -407,7 +419,7 @@ class PhoneRegisterLoopTests(unittest.TestCase):
             return {"page": {"type": "phone_otp_verification"}}
 
         flow.send_phone_otp = _send
-        flow._phone_otp_validate = lambda code: {"continue_url": "https://auth.openai.com/about-you"}
+        flow._phone_otp_validate = lambda code, referer="": {"continue_url": "https://auth.openai.com/about-you"}
 
         continue_url, _auth_url = flow._do_phone_register_loop(ctrl)
 
@@ -415,6 +427,79 @@ class PhoneRegisterLoopTests(unittest.TestCase):
         self.assertEqual(sent[0][0], ctrl.rented[0])
         self.assertIn("phone-otp/send", sent[0][1])
         self.assertEqual(continue_url, "https://auth.openai.com/about-you")
+
+    def test_contact_verification_after_send_is_the_sms_page_not_a_failure(self):
+        """线上实跑的完整形状：发码成功 → contact_verification → 等码 → validate。
+
+        之前把 contact_verification 当成"没进短信页"直接判失败，号已经注册出去
+        了却拿不到凭证，白扔一个账号。
+        """
+        ctrl = _FakeController()
+        flow = _loop_flow()
+        flow.phone_authorize_continue = lambda phone, sentinel: {
+            "page": {"type": "create_account_password"}
+        }
+        flow.phone_register_user = lambda phone: {
+            "page": {"type": "phone_otp_send"},
+            "continue_url": "https://auth.openai.com/api/accounts/phone-otp/send",
+        }
+        flow.send_phone_otp = lambda phone, continue_url="": {
+            "page": {"type": "contact_verification"},
+            "continue_url": "https://auth.openai.com/contact-verification",
+        }
+        validated = []
+
+        def _validate(code, referer=""):
+            validated.append((code, referer))
+            return {"page": {"type": "about_you"}, "continue_url": "https://auth.openai.com/about-you"}
+
+        flow._phone_otp_validate = _validate
+
+        continue_url, _auth_url = flow._do_phone_register_loop(ctrl)
+
+        self.assertEqual(validated, [("654321", "https://auth.openai.com/contact-verification")])
+        self.assertEqual(continue_url, "https://auth.openai.com/about-you")
+        self.assertEqual(ctrl.successes, 1)
+        self.assertEqual(ctrl.refunds, [])
+
+    def test_verified_but_no_next_step_falls_through_to_create_account(self):
+        ctrl = _FakeController()
+        flow = _loop_flow()
+        flow.phone_authorize_continue = lambda phone, sentinel: {
+            "page": {"type": "create_account_password"}
+        }
+        flow.phone_register_user = lambda phone: {
+            "page": {"type": "contact_verification"},
+            "continue_url": "https://auth.openai.com/contact-verification",
+        }
+        flow.send_phone_otp = lambda phone, continue_url="": self.fail("服务端已经发过码了")
+        flow._phone_otp_validate = lambda code, referer="": {}
+
+        continue_url, _auth_url = flow._do_phone_register_loop(ctrl)
+
+        # 空 continue_url 才会让上层去走 about-you → create_account
+        self.assertEqual(continue_url, "")
+
+    def test_number_already_in_use_rotates_to_the_next_number(self):
+        """服务端说 phone_number_in_use 就是号被占了，换个号继续，别当未知错误。"""
+        ctrl = _FakeController(max_attempts=4)
+        flow = _loop_flow()
+
+        def _continue(phone, sentinel):
+            raise RuntimeError(
+                "authorize/continue 失败(screen_hint=signup): HTTP 400 body="
+                '{"error": {"message": "Phone number already in use. Please try again.",'
+                ' "code": "phone_number_in_use"}}'
+            )
+
+        flow.phone_authorize_continue = _continue
+
+        with self.assertRaises(RuntimeError):
+            flow._do_phone_register_loop(ctrl)
+
+        # 未知错误连续 3 次就停了，认成"号被占用"才会把 4 个号都试完
+        self.assertEqual(len(ctrl.rented), 4)
+        self.assertEqual(len(ctrl.refunds), 4)
 
     def test_server_forwarding_past_verification_does_not_send_another_code(self):
         ctrl = _FakeController()

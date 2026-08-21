@@ -936,8 +936,10 @@ class AuthFlow(PhoneRegisterMixin):
         self._trace_http("phone_otp_resend", resp)
         return resp.status_code == 200
 
-    def _phone_otp_validate(self, code: str) -> dict:
-        headers = self._phone_headers("https://auth.openai.com/phone-verification")
+    def _phone_otp_validate(self, code: str, referer: str = "") -> dict:
+        # 同一个接口在不同链路上的来源页不一样：绑手机是 /phone-verification，
+        # 手机号注册停在 /contact-verification，referer 对不上容易被风控盯上。
+        headers = self._phone_headers(referer or "https://auth.openai.com/phone-verification")
         resp = self.session.post(
             "https://auth.openai.com/api/accounts/phone-otp/validate",
             headers=headers,

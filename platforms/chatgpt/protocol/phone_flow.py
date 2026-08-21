@@ -5,6 +5,17 @@
 （create_account → workspace/select → callback → session → Codex）两条链完全
 一样，所以这里只实现前半段，后半段调 ``AuthFlow`` 已有的方法。
 
+浏览器实测下来，手机号这一段的接口顺序是：
+
+    POST /api/accounts/user/register     {"username": "+56...", "password": "..."}
+    （服务端要么直接把人放到 /contact-verification 并把短信发出去，要么先停在
+      phone_otp_send，等客户端打一次 phone-otp/send 才发）
+    POST /api/accounts/phone-otp/validate {"code": "869328"}   referer=/contact-verification
+    POST /api/accounts/create_account     {"name": ..., "birthdate": ...}  referer=/about-you
+
+注意 ``contact_verification`` 就是手机验证码页面本身，不是异常状态——OpenAI 把
+邮箱/手机的验证码页统一收到了 /contact-verification 这一个路由下。
+
 绑定邮箱是独立的一段，OpenAI 把它放在 authorize 流程内部（页面 ``/add-email``）：
 
     POST /api/accounts/add-email/send      {"email": "..."}   不带 sentinel
@@ -28,11 +39,19 @@ logger = logging.getLogger(__name__)
 
 PHONE_USERNAME_KIND = "phone_number"
 
-# 这个号不能用，换下一个再试
+# 短信验证码页面：手机和邮箱的验证码页在 OpenAI 那边共用 /contact-verification
+PHONE_VERIFICATION_REFERER = "https://auth.openai.com/contact-verification"
+
+# 这个号不能用，换下一个再试。接码平台的号是回收再卖的，"已被占用"是常态，
+# 服务端的说法有下划线（code）和大白话（message）两种，两种都得认。
 _PHONE_REJECTED_PATTERNS = (
     "phone_number_already_in_use",
+    "phone_number_in_use",
     "already_in_use",
+    "already in use",
+    "number_in_use",
     "already_taken",
+    "already taken",
     "phone_already_verified",
     "already_verified",
     "disallowed_phone",
@@ -78,10 +97,19 @@ class PhoneRegisterMixin:
 
     @staticmethod
     def _is_phone_otp_state(page_type: str = "", continue_url: str = "") -> bool:
-        """短信已经发出去了，可以开始等码。"""
+        """短信已经发出去了，可以开始等码。
+
+        ``contact_verification`` 是手机号注册链路上真正的验证码页（浏览器里
+        phone-otp/validate 的 referer 就是它），和绑手机用的
+        ``phone_otp_verification`` 等价，别当成异常状态。
+        """
         pt = (page_type or "").strip().lower()
         cu = (continue_url or "").strip().lower()
-        return (pt == "phone_otp_verification") or ("phone-verification" in cu)
+        return (
+            pt in ("phone_otp_verification", "contact_verification", "phone_verification")
+            or "phone-verification" in cu
+            or "contact-verification" in cu
+        )
 
     @staticmethod
     def _is_phone_otp_send_state(page_type: str = "", continue_url: str = "") -> bool:
@@ -325,8 +353,9 @@ class PhoneRegisterMixin:
         pt = (page_type or "").strip().lower()
         cu = (continue_url or "").strip().lower()
         return (
-            pt in ("email_otp_verification", "external_url")
+            pt in ("email_otp_verification", "contact_verification", "external_url")
             or "email-verification" in cu
+            or "contact-verification" in cu
         )
 
     def _try_bind_email(self, mail_provider: Optional[MailProvider], continue_url: str) -> str:
@@ -355,6 +384,7 @@ class PhoneRegisterMixin:
                 "手机注册需要接码平台：请先在「设置 → 接码」里启用并填好 API Key"
             )
         self._bind_email_error = ""
+        self._phone_verification_referer = PHONE_VERIFICATION_REFERER
         binder = mail_provider if bind_email else None
 
         if not self.check_proxy():
@@ -606,7 +636,13 @@ class PhoneRegisterMixin:
             )
             return continue_url
 
-        if not self._is_phone_otp_state(page_type, continue_url):
+        if self._is_phone_otp_state(page_type, continue_url):
+            # user/register 直接落到验证码页，短信是服务端自己发的
+            logger.info(
+                "[手机注册] 服务端已把短信发出，进入验证码页: page=%s", page_type or "(empty)"
+            )
+            self._remember_phone_verification_page(continue_url)
+        else:
             if not self._is_phone_otp_send_state(page_type, continue_url):
                 logger.warning(
                     "[手机注册] 未识别的下一步 page=%s continue=%s，按「该发码了」处理",
@@ -618,15 +654,18 @@ class PhoneRegisterMixin:
             send_continue = self._normalize_continue_url(
                 self._extract_continue_url_from_step(send_resp)
             )
-            if self._is_phone_otp_state(send_page, send_continue) or not send_page:
-                continue_url = send_continue or continue_url
-            elif self._is_forward_state(send_page, send_continue):
+            if self._is_forward_state(send_page, send_continue):
                 return send_continue
-            else:
-                raise RuntimeError(
-                    f"发码后仍未进入短信验证页: page={send_page or '(empty)'} "
-                    f"continue={(send_continue or '(empty)')[:160]}"
+            if not (self._is_phone_otp_state(send_page, send_continue) or not send_page):
+                # 发码接口已经 200，码大概率已经在路上。这时候放弃等于白扔一个
+                # 已经建好的账号，先照常等短信，验不过再按失败收场。
+                logger.warning(
+                    "[手机注册] 发码成功但下一步页面不认识: page=%s continue=%s，仍按等短信处理",
+                    send_page or "(empty)",
+                    (send_continue or "(empty)")[:160],
                 )
+            continue_url = send_continue or continue_url
+            self._remember_phone_verification_page(send_continue)
 
         try:
             ctrl.mark_send_succeeded()
@@ -636,6 +675,16 @@ class PhoneRegisterMixin:
         return self._wait_and_validate_sms(
             phone, ctrl, per_phone_timeout, max_code_retries, continue_url
         )
+
+    def _remember_phone_verification_page(self, continue_url: str = "") -> None:
+        """记下验证码页地址，validate 用它当 referer。"""
+        url = (continue_url or "").split("?")[0].strip()
+        if url.startswith("/"):
+            url = f"https://auth.openai.com{url}"
+        if url.startswith("https://auth.openai.com/") and "/api/" not in url:
+            self._phone_verification_referer = url
+        else:
+            self._phone_verification_referer = PHONE_VERIFICATION_REFERER
 
     def _wait_and_validate_sms(
         self,
@@ -671,7 +720,11 @@ class PhoneRegisterMixin:
             seen_codes.add(code)
 
             try:
-                validate_resp = self._phone_otp_validate(code)
+                validate_resp = self._phone_otp_validate(
+                    code,
+                    referer=getattr(self, "_phone_verification_referer", "")
+                    or PHONE_VERIFICATION_REFERER,
+                )
             except Exception as exc:
                 last_err = exc
                 logger.warning("[手机注册] 短信验证码校验失败 (code=%s): %s", code, str(exc)[:200])
@@ -684,8 +737,17 @@ class PhoneRegisterMixin:
             next_url = self._normalize_continue_url(
                 self._extract_continue_url_from_step(validate_resp)
             )
-            logger.info("[手机注册] ✅ 手机号 %s 验证通过", phone)
-            return next_url or continue_url or ""
+            next_page = self._extract_page_type(validate_resp)
+            logger.info(
+                "[手机注册] ✅ 手机号 %s 验证通过，服务端下一步 page=%s continue=%s",
+                phone,
+                next_page or "(empty)",
+                (next_url or "(empty)")[:160],
+            )
+            if self._is_phone_otp_state(next_page, next_url):
+                # 验完还停在验证码页说明没有后续指引，按浏览器的走法进 about-you
+                return ""
+            return next_url or ""
 
         raise _PhoneUnusable(last_err or TimeoutError(f"号 {phone} 在 {per_phone_timeout}s 内没收到短信"))
 
@@ -748,10 +810,13 @@ class PhoneAccountCreatedError(RuntimeError):
         detail = f"手机号 {phone} 的账号已在 OpenAI 侧创建"
         if password:
             detail += f"（密码 {password}）"
+        hint = ""
+        if "没收到短信" in reason or "超时" in reason:
+            hint = "这个号段多半被 OpenAI 改走 WhatsApp 发码了，换 52（泰国）再试成功率高得多。"
         super().__init__(
             f"{detail}，但短信验证没走完：{reason}。"
             f"这个号已被该账号占用，重试会注册出新账号；"
-            f"可以用手机号 + 密码单独登录把凭证补回来。"
+            f"可以用手机号 + 密码单独登录把凭证补回来。{hint}"
         )
 
 
