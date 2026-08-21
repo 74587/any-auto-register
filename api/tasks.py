@@ -513,7 +513,11 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                     password=req.password,
                 )
                 current_email = account.email or current_email
-                if str(merged_extra.get("mail_provider", "")).strip() == "cfworker":
+                # 手机号注册且没绑上邮箱时，account.email 存的是号码，没有域名可校验
+                if (
+                    str(merged_extra.get("mail_provider", "")).strip() == "cfworker"
+                    and "@" in (account.email or "")
+                ):
                     from core.email_domain_policy import validate_email_domain_policy
 
                     validate_email_domain_policy(

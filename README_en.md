@@ -131,7 +131,22 @@ This toggle can be found in:
 - Registration task page
 - ChatGPT platform registration popup
 
-### 3. Phone Verification (add-phone)
+### 3. ChatGPT Registration Method
+
+The same two places also let you pick which identity registration uses. It combines freely with the token mode above:
+
+- **Email registration** (default)
+  - Takes an address from the mailbox pool and reads the emailed code
+- **Phone registration**
+  - Rents a number from the SMS provider and reads the SMS code; no mailbox is consumed
+  - The account is listed under its phone number
+- **Phone registration + email binding**
+  - Registers with the number first, then binds an address from the mailbox pool and reads one emailed code
+  - Once bound, the account is listed under its email and the phone number stays in the account details
+
+Both phone methods need SMS receiving enabled with an API key under **Settings → 手机接码 (Phone SMS)**, otherwise the task fails immediately. The binding step is only accepted while OpenAI keeps add-email in the current authorize flow; when it is rejected the account is still kept and the reason is stored in the account details, so it can be bound later.
+
+### 4. Phone Verification (add-phone)
 
 OpenAI asks some registrations to bind a phone number. When add-phone is hit, the system rents a number, waits for the SMS, and submits the code without any manual step. Configure it under **Settings → 手机接码 (Phone SMS)**:
 
@@ -152,7 +167,7 @@ OpenAI asks some registrations to bind a phone number. When add-phone is hit, th
 
 Country ID, per-number timeout, and max number swaps can additionally be overridden per task on the registration task page. The provider and API key are maintained only in the global settings.
 
-### 4. ChatGPT Batch Status Sync & Re-upload
+### 5. ChatGPT Batch Status Sync & Re-upload
 
 At the top of the ChatGPT platform list, there are two types of batch capabilities:
 

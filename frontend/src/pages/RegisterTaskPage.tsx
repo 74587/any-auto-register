@@ -618,8 +618,9 @@ export default function RegisterTaskPage() {
         {platform === 'chatgpt' && (
           <Card title="ChatGPT 手机接码" style={{ marginBottom: 16 }}>
             <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              仅在注册链路进入 add-phone 时使用：自动租号、等短信、验证，全程无人值守。
-              平台与 API Key 在「设置 → 手机接码」里配置，这里只覆盖本次任务的参数。
+              手机注册用它拿号，邮箱注册则只在链路进入 add-phone 时用：自动租号、等短信、
+              验证，全程无人值守。平台与 API Key 在「设置 → 手机接码」里配置，这里只覆盖
+              本次任务的参数。
             </Text>
             <Form.Item name="sms_country" label="国家（可选）">
               <SmsCountrySelect placeholder="留空用设置里的默认国家" />
