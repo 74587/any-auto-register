@@ -16,6 +16,7 @@ import {
   Typography,
   Alert,
   DatePicker,
+  Switch,
   theme,
 } from 'antd'
 import type { MenuProps } from 'antd'
@@ -29,6 +30,7 @@ import {
   MoreOutlined,
   DeleteOutlined,
   SyncOutlined,
+  KeyOutlined,
 } from '@ant-design/icons'
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
@@ -369,6 +371,8 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
   const [resultProbe, setResultProbe] = useState<any>(null)
   const [resultCliproxySync, setResultCliproxySync] = useState<any>(null)
   const [runningActionId, setRunningActionId] = useState<string | null>(null)
+  const [taskModalTitle, setTaskModalTitle] = useState('')
+  const [actionTaskId, setActionTaskId] = useState<string | null>(null)
 
   const showResult = (title: string, status: 'success' | 'error', text: string, url = '', probe: any = null, cliproxySync: any = null) => {
     setResultTitle(title)
@@ -390,10 +394,35 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
     }
   }
 
+  // 补 RT 要跑几十秒的授权链，同步等只能看见一个转圈。改走后台任务，
+  // 和注册一样用日志弹窗把每一步显示出来。
+  const runAsTask = async (actionLabel: string) => {
+    setRunningActionId('backfill_refresh_token')
+    try {
+      const result = await apiFetch('/tasks/backfill-rt', {
+        method: 'POST',
+        body: JSON.stringify({ account_ids: [acc.id], only_missing_rt: false, delay_seconds: 0 }),
+      })
+      setTaskModalTitle(`${actionLabel} - ${acc.email}`)
+      setActionTaskId(result.task_id)
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e)
+      message.error(`${actionLabel}失败: ${detail}`)
+    } finally {
+      setRunningActionId(null)
+    }
+  }
+
   const handleAction = async (actionId: string) => {
     if (runningActionId) return
     const actionLabel = actions.find((item) => item.id === actionId)?.label || actionId
     const toastKey = `account-action:${acc?.id}:${actionId}`
+
+    if (actionId === 'backfill_refresh_token') {
+      await runAsTask(actionLabel)
+      return
+    }
+
     setRunningActionId(actionId)
     message.loading({ content: `${actionLabel}运行中...`, key: toastKey, duration: 0 })
 
@@ -465,6 +494,16 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
           loading={Boolean(runningActionId)}
         />
       </Dropdown>
+      <Modal
+        title={taskModalTitle}
+        open={Boolean(actionTaskId)}
+        onCancel={() => { setActionTaskId(null); onRefresh() }}
+        footer={null}
+        width={620}
+        maskClosable={false}
+      >
+        {actionTaskId ? <TaskLogPanel taskId={actionTaskId} kind="backfill_rt" onDone={onRefresh} /> : null}
+      </Modal>
       <Modal
         title={resultTitle}
         open={resultOpen}
@@ -565,6 +604,10 @@ export default function Accounts() {
   const [cpaSyncLoading, setCpaSyncLoading] = useState<'pending' | 'selected' | ''>('')
   const [cpaUploadLoading, setCpaUploadLoading] = useState<'all' | 'selected' | ''>('')
   const [statusSyncLoading, setStatusSyncLoading] = useState<'probe_selected' | 'probe_all' | 'remote_selected' | 'remote_all' | ''>('')
+  const [backfillRtModalOpen, setBackfillRtModalOpen] = useState(false)
+  const [backfillRtLoading, setBackfillRtLoading] = useState(false)
+  const [backfillRtTaskId, setBackfillRtTaskId] = useState<string | null>(null)
+  const [backfillRtForm] = Form.useForm()
 
   useEffect(() => {
     if (platform) setCurrentPlatform(platform)
@@ -1036,6 +1079,50 @@ export default function Accounts() {
     }
   }
 
+  const missingRtCount = accounts.filter((item) => !getRefreshToken(item)).length
+
+  const handleBackfillRt = async () => {
+    const values = await backfillRtForm.validateFields()
+    const scope = selectedRowKeys.length > 0 ? 'selected' : 'all'
+
+    const body: Record<string, unknown> = {
+      only_missing_rt: values.only_missing_rt !== false,
+      allow_login: values.allow_login !== false,
+      concurrency: Number(values.concurrency) || 1,
+      delay_seconds: Number(values.delay_seconds) || 0,
+    }
+
+    if (scope === 'selected') {
+      body.account_ids = Array.from(selectedRowKeys)
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    } else {
+      body.all_filtered = true
+      if (search) body.email = search
+      if (filterStatus) body.status = filterStatus
+    }
+
+    setBackfillRtLoading(true)
+    try {
+      const result = await apiFetch('/tasks/backfill-rt', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+      setBackfillRtTaskId(result.task_id)
+      message.success(`已开始给 ${result.total} 个账号补 RT`)
+    } catch (e) {
+      message.error(`补 RT 启动失败: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setBackfillRtLoading(false)
+    }
+  }
+
+  const closeBackfillRtModal = () => {
+    setBackfillRtModalOpen(false)
+    setBackfillRtTaskId(null)
+    backfillRtForm.resetFields()
+  }
+
   const getStatusSyncScope = (): 'selected' | 'all' => (selectedRowKeys.length > 0 ? 'selected' : 'all')
 
   const getBackfillScope = (): 'selected' | 'pending' => (selectedRowKeys.length > 0 ? 'selected' : 'pending')
@@ -1369,6 +1456,15 @@ export default function Accounts() {
             </Dropdown>
           )}
           {currentPlatform === 'chatgpt' && (
+            <Button
+              icon={<KeyOutlined />}
+              onClick={() => setBackfillRtModalOpen(true)}
+              disabled={total === 0}
+            >
+              {selectedRowKeys.length > 0 ? `补 RT (${selectedRowKeys.length})` : '补 RT'}
+            </Button>
+          )}
+          {currentPlatform === 'chatgpt' && (
             <Popconfirm
               title={
                 getBackfillScope() === 'selected'
@@ -1482,6 +1578,69 @@ export default function Accounts() {
           </Form>
         ) : (
           <TaskLogPanel taskId={taskId} onDone={() => { load(); }} />
+        )}
+      </Modal>
+
+      <Modal
+        title="批量补 RT"
+        open={backfillRtModalOpen}
+        onCancel={closeBackfillRtModal}
+        footer={null}
+        width={backfillRtTaskId ? 720 : 520}
+        maskClosable={false}
+      >
+        {!backfillRtTaskId ? (
+          <>
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={
+                selectedRowKeys.length > 0
+                  ? `处理所选 ${selectedRowKeys.length} 个账号`
+                  : `处理当前筛选的 ${total} 个账号（本页缺 RT ${missingRtCount} 个）`
+              }
+              description="先用库里的会话直接换 refresh_token；会话失效时再用邮箱密码重新登录，可能需要收一封验证码。"
+            />
+            <Form form={backfillRtForm} layout="vertical" onFinish={handleBackfillRt}>
+              <Form.Item
+                name="only_missing_rt"
+                label="只补缺 RT 的账号"
+                initialValue={true}
+                valuePropName="checked"
+                extra="关掉会给已有 RT 的账号也重新换一次，没必要时别开"
+              >
+                <Switch />
+              </Form.Item>
+              <Form.Item
+                name="allow_login"
+                label="会话失效时用邮箱密码重登"
+                initialValue={true}
+                valuePropName="checked"
+                extra="关掉则只尝试复用会话，快但成功率低"
+              >
+                <Switch />
+              </Form.Item>
+              <Form.Item name="concurrency" label="并发数" initialValue={1}>
+                <InputNumber min={1} max={10} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item
+                name="delay_seconds"
+                label="每个账号间隔(秒)"
+                initialValue={5}
+                extra="连续打授权链容易触发风控，建议留几秒"
+              >
+                <InputNumber min={0} precision={1} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit" block loading={backfillRtLoading}>
+                  开始补 RT
+                </Button>
+              </Form.Item>
+            </Form>
+          </>
+        ) : (
+          <TaskLogPanel taskId={backfillRtTaskId} kind="backfill_rt" onDone={() => { load() }} />
         )}
       </Modal>
 

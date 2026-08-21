@@ -56,6 +56,27 @@ class MailboxProviderAdapter(MailProvider):
     def account(self) -> Optional[MailboxAccount]:
         return self._account
 
+    def bind_task_control(
+        self,
+        task_control=None,
+        *,
+        attempt_id=None,
+        log_fn=None,
+    ) -> None:
+        """把任务的停止/跳过开关和日志接到底层邮箱上。
+
+        ``BaseMailbox`` 的轮询循环每 0.25 秒查一次 ``_task_control``；不绑的话
+        "停止任务"要等整个 OTP 超时（默认三分钟）走完才生效，界面上看着像点了
+        没反应。``_log_fn`` 同理：不接的话等码那几分钟任务日志一行都不出。
+        """
+        if task_control is not None:
+            self._mailbox._task_control = task_control
+        if attempt_id is not None:
+            self._mailbox._task_attempt_token = attempt_id
+        if log_fn is not None:
+            # 邮箱实现自己会带 [微软邮箱] 这类前缀，这里不要再包一层
+            self._mailbox._log_fn = log_fn
+
     def create_mailbox(self) -> str:
         account = self._mailbox.get_email()
         self._account = account
@@ -104,3 +125,50 @@ class MailboxProviderAdapter(MailProvider):
         if self._otp_timeout and self._otp_timeout > 0:
             return self._otp_timeout
         return max(int(requested or 0), 1)
+
+
+class FixedAddressProviderAdapter(MailboxProviderAdapter):
+    """绑定到一个【已经存在】的地址，不向邮箱池要新号。
+
+    补 RT、补 2FA 这类后置动作面对的是库里的老号，地址早就定了，走
+    ``MailboxProviderAdapter`` 会白白从池子里领一个新邮箱（微软池还会直接把号
+    弹出去）。这里直接拿调用方给的 ``MailboxAccount`` 收信。
+
+    ``prime()`` 用来在流程开始前记下收件箱现有邮件 id，避免读到上一轮的旧码；
+    只是尽力而为，拿不到就靠 ``issued_after`` 时间窗兜底。
+    """
+
+    def __init__(
+        self,
+        mailbox: BaseMailbox,
+        account: MailboxAccount,
+        *,
+        kind: str = "mailbox",
+        otp_timeout: Optional[int] = None,
+    ):
+        super().__init__(
+            mailbox,
+            kind=kind,
+            fixed_email=str(getattr(account, "email", "") or ""),
+            pooled=False,
+            ephemeral=False,
+            accepts_existing_account=True,
+            otp_timeout=otp_timeout,
+        )
+        self._account = account
+
+    def create_mailbox(self) -> str:
+        self.prime()
+        if not self._fixed_email:
+            raise RuntimeError(f"{self.kind} 缺少邮箱地址")
+        return self._fixed_email
+
+    def prime(self) -> None:
+        get_current_ids = getattr(self._mailbox, "get_current_ids", None)
+        if not callable(get_current_ids):
+            return
+        try:
+            self._before_ids = set(get_current_ids(self._account) or [])
+        except Exception as exc:
+            logger.debug("[%s] 读取 %s 已有邮件 id 失败: %s", self.kind, self._fixed_email, exc)
+            self._before_ids = set()
