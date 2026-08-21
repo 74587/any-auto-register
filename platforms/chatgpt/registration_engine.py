@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 REGISTRATION_MODE_REFRESH_TOKEN = "refresh_token"
 REGISTRATION_MODE_ACCESS_TOKEN_ONLY = "access_token_only"
 
+# 注册身份用什么：邮箱、手机号、手机号注册完再把邮箱绑上去
+REGISTER_FLOW_EMAIL = "email"
+REGISTER_FLOW_PHONE = "phone"
+REGISTER_FLOW_PHONE_WITH_EMAIL = "phone_with_email"
+
 _PASSWORD_ALPHABET = string.ascii_letters + string.digits + "!@#$"
 
 
@@ -53,9 +58,12 @@ class RegistrationResult:
 
     @classmethod
     def from_auth_result(cls, result: AuthResult, *, source: str = "register") -> "RegistrationResult":
+        phone_number = getattr(result, "phone_number", "") or ""
+        bound_email = getattr(result, "bound_email", "") or ""
         return cls(
             success=True,
-            email=result.email,
+            # 手机号注册的号，绑上邮箱之后按邮箱记账，没绑上就只能用手机号当标识
+            email=bound_email or result.email,
             password=result.password,
             access_token=result.access_token,
             refresh_token=result.refresh_token,
@@ -63,7 +71,12 @@ class RegistrationResult:
             session_token=result.session_token,
             cookie_header=result.cookie_header,
             source=source,
-            metadata={"device_id": result.device_id, "totp_secret": result.totp_secret},
+            metadata={
+                "device_id": result.device_id,
+                "totp_secret": result.totp_secret,
+                "phone_number": phone_number,
+                "bound_email": bound_email,
+            },
         )
 
 
@@ -85,6 +98,7 @@ class ChatGPTRegistrationEngine:
         extra_config: Optional[dict] = None,
         log_fn: Optional[Callable[[str], None]] = None,
         mailbox_kind: str = "mailbox",
+        register_flow: str = REGISTER_FLOW_EMAIL,
     ):
         self.mailbox = mailbox
         self.mode = mode
@@ -94,24 +108,17 @@ class ChatGPTRegistrationEngine:
         self.extra_config = dict(extra_config or {})
         self.log = log_fn or logger.info
         self.mailbox_kind = mailbox_kind
+        self.register_flow = register_flow or REGISTER_FLOW_EMAIL
         self.flow: Optional[AuthFlow] = None
 
     def run(self) -> RegistrationResult:
-        provider = MailboxProviderAdapter(
-            self.mailbox,
-            kind=self.mailbox_kind,
-            fixed_email=self.email,
-            pooled=True,
-            ephemeral=not self.email,
-            otp_timeout=self._otp_timeout(),
-        )
-        flow = AuthFlow(
-            Config(proxy=self.proxy),
-            sms_callback=self._build_sms_callback(),
-            env_overrides=self._env_overrides(),
-            on_password=self._on_password,
-        )
-        self.flow = flow
+        if self.register_flow in (REGISTER_FLOW_PHONE, REGISTER_FLOW_PHONE_WITH_EMAIL):
+            return self._run_phone()
+        return self._run_email()
+
+    def _run_email(self) -> RegistrationResult:
+        provider = self._build_mail_provider()
+        flow = self._build_flow()
 
         try:
             result = flow.run_register(provider)
@@ -119,6 +126,53 @@ class ChatGPTRegistrationEngine:
             return self._salvage(flow, exc)
 
         return RegistrationResult.from_auth_result(result)
+
+    def _run_phone(self) -> RegistrationResult:
+        """手机号注册。邮箱只在「手机注册 + 绑定邮箱」模式下才会去池子里领。"""
+        bind_email = self.register_flow == REGISTER_FLOW_PHONE_WITH_EMAIL
+        sms_callback = self._build_sms_callback()
+        if sms_callback is None:
+            return RegistrationResult(
+                success=False,
+                error_message=(
+                    "手机注册需要接码平台：请先在「设置 → 接码」里启用接码并填好 API Key"
+                ),
+            )
+
+        provider = self._build_mail_provider() if bind_email else None
+        flow = self._build_flow(sms_callback=sms_callback)
+
+        try:
+            result = flow.run_phone_register(mail_provider=provider, bind_email=bind_email)
+        except Exception as exc:
+            return self._salvage(flow, exc)
+
+        registration = RegistrationResult.from_auth_result(result, source="phone_register")
+        bind_error = getattr(flow, "_bind_email_error", "")
+        if bind_email and not registration.metadata.get("bound_email"):
+            registration.metadata["bind_email_error"] = bind_error or "未绑定邮箱"
+            self.log(f"手机号注册成功但邮箱未绑上：{bind_error or '服务端未提供 add-email 步骤'}")
+        return registration
+
+    def _build_mail_provider(self) -> MailboxProviderAdapter:
+        return MailboxProviderAdapter(
+            self.mailbox,
+            kind=self.mailbox_kind,
+            fixed_email=self.email,
+            pooled=True,
+            ephemeral=not self.email,
+            otp_timeout=self._otp_timeout(),
+        )
+
+    def _build_flow(self, sms_callback: Optional[object] = None) -> AuthFlow:
+        flow = AuthFlow(
+            Config(proxy=self.proxy),
+            sms_callback=sms_callback if sms_callback is not None else self._build_sms_callback(),
+            env_overrides=self._env_overrides(),
+            on_password=self._on_password,
+        )
+        self.flow = flow
+        return flow
 
     # ── 协议层注入点 ──
 
@@ -194,7 +248,7 @@ class ChatGPTRegistrationEngine:
         if not has_credentials:
             return RegistrationResult(
                 success=False,
-                email=result.email or self.email,
+                email=getattr(result, "bound_email", "") or result.email or self.email,
                 password=result.password or self.password,
                 error_message=str(exc),
             )

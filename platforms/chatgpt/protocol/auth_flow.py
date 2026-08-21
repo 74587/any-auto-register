@@ -35,6 +35,7 @@ from platforms.chatgpt.protocol.fingerprint import (
 )
 from platforms.chatgpt.protocol.mail_provider import MailProvider
 from platforms.chatgpt.protocol.http_client import create_http_session, USER_AGENT
+from platforms.chatgpt.protocol.phone_flow import PhoneRegisterMixin
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,9 @@ class AuthResult:
         self.refresh_token: str = ""
         self.cookie_header: str = ""
         self.totp_secret: str = ""
+        # 手机号注册链路专用：账号身份是手机号，邮箱是后来绑上去的（可能没绑上）
+        self.phone_number: str = ""
+        self.bound_email: str = ""
 
     def is_valid(self) -> bool:
         return bool(self.session_token and self.access_token)
@@ -85,10 +89,12 @@ class AuthResult:
             "refresh_token": self.refresh_token,
             "cookie_header": self.cookie_header,
             "totp_secret": self.totp_secret,
+            "phone_number": self.phone_number,
+            "bound_email": self.bound_email,
         }
 
 
-class AuthFlow:
+class AuthFlow(PhoneRegisterMixin):
     """注册/登录协议流"""
 
     def __init__(
@@ -1774,7 +1780,7 @@ class AuthFlow:
         return csrf
 
     # ── Step 3: 获取 auth URL ──
-    def get_auth_url(self, csrf_token: str, email: str = "") -> str:
+    def get_auth_url(self, csrf_token: str, email: str = "", login_hint: str = "") -> str:
         logger.info("[2/10] 获取 OpenAI 授权地址...")
         headers = self._common_headers("https://chatgpt.com/auth/login")
         headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -1787,8 +1793,9 @@ class AuthFlow:
             "auth_session_logging_id": str(uuid.uuid4()),
             "ext-passkey-client-capabilities": "1111",
         }
-        if email:
-            query_params["login_hint"] = email
+        hint = (login_hint or email or "").strip()
+        if hint:
+            query_params["login_hint"] = hint
         signin_url = f"https://chatgpt.com/api/auth/signin/openai?{urlencode(query_params)}"
         resp = self.session.post(
             signin_url,
@@ -1924,18 +1931,24 @@ class AuthFlow:
         screen_hint: str = "signup",
         referer: str = "https://auth.openai.com/create-account",
         trace_step: str = "",
+        username_kind: str = "email",
     ) -> dict:
-        """调用 /api/accounts/authorize/continue，返回 JSON。"""
+        """调用 /api/accounts/authorize/continue，返回 JSON。
+
+        ``username_kind`` 决定这次提交的身份是邮箱还是手机号（``phone_number``），
+        服务端按它决定后面走邮件验证码还是短信验证码。
+        """
         headers = self._common_headers(referer)
         headers["Content-Type"] = "application/json"
         if sentinel_token:
             headers["openai-sentinel-token"] = sentinel_token
         if getattr(self, "_last_sentinel_so_token", ""):
             headers["openai-sentinel-so-token"] = self._last_sentinel_so_token
-        payload = {
-            "username": {"value": email, "kind": "email"},
-            "screen_hint": screen_hint,
+        payload: dict = {
+            "username": {"value": email, "kind": username_kind or "email"},
         }
+        if screen_hint:
+            payload["screen_hint"] = screen_hint
         resp = self.session.post(
             "https://auth.openai.com/api/accounts/authorize/continue",
             headers=headers,

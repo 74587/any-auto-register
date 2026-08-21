@@ -32,8 +32,10 @@ import {
   SyncOutlined,
   KeyOutlined,
 } from '@ant-design/icons'
+import { ChatGPTRegisterFlowSelect } from '@/components/ChatGPTRegisterFlowSelect'
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
+import { usePersistentChatGPTRegisterFlow } from '@/hooks/usePersistentChatGPTRegisterFlow'
 import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatGPTRegistrationMode'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
 import { buildChatGPTRegistrationRequestAdapter } from '@/lib/chatgptRegistrationRequestAdapter'
@@ -627,6 +629,8 @@ export default function Accounts() {
   const [detailForm] = Form.useForm()
   const { mode: chatgptRegistrationMode, setMode: setChatgptRegistrationMode } =
     usePersistentChatGPTRegistrationMode()
+  const { registerFlow: chatgptRegisterFlow, setRegisterFlow: setChatgptRegisterFlow } =
+    usePersistentChatGPTRegisterFlow()
   const [importText, setImportText] = useState('')
   const [importLoading, setImportLoading] = useState(false)
   const [taskId, setTaskId] = useState<string | null>(null)
@@ -847,6 +851,7 @@ export default function Accounts() {
         buildChatGPTRegistrationRequestAdapter(
           currentPlatform,
           chatgptRegistrationMode,
+          chatgptRegisterFlow,
         )
       const adaptedRegisterExtra = chatgptRegistrationRequestAdapter
         ? chatgptRegistrationRequestAdapter.extendExtra(registerExtra)
@@ -1644,12 +1649,20 @@ export default function Accounts() {
               <InputNumber min={0} precision={1} step={0.5} style={{ width: '100%' }} placeholder="0 = 不延迟" />
             </Form.Item>
             {currentPlatform === 'chatgpt' && (
-              <Form.Item label="ChatGPT Token 方案">
-                <ChatGPTRegistrationModeSwitch
-                  mode={chatgptRegistrationMode}
-                  onChange={setChatgptRegistrationMode}
-                />
-              </Form.Item>
+              <>
+                <Form.Item label="注册方式">
+                  <ChatGPTRegisterFlowSelect
+                    flow={chatgptRegisterFlow}
+                    onChange={setChatgptRegisterFlow}
+                  />
+                </Form.Item>
+                <Form.Item label="ChatGPT Token 方案">
+                  <ChatGPTRegistrationModeSwitch
+                    mode={chatgptRegistrationMode}
+                    onChange={setChatgptRegistrationMode}
+                  />
+                </Form.Item>
+              </>
             )}
             <Form.Item>
               <Button type="primary" htmlType="submit" block loading={registerLoading}>

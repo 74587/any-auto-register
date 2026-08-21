@@ -19,9 +19,11 @@ import {
   LoadingOutlined,
 } from '@ant-design/icons'
 import { listICloudAccounts, type ICloudAccount } from '@/api/icloud'
+import { ChatGPTRegisterFlowSelect } from '@/components/ChatGPTRegisterFlowSelect'
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
 import SmsCountrySelect from '@/components/SmsCountrySelect'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
+import { usePersistentChatGPTRegisterFlow } from '@/hooks/usePersistentChatGPTRegisterFlow'
 import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatGPTRegistrationMode'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
 import { buildChatGPTRegistrationRequestAdapter } from '@/lib/chatgptRegistrationRequestAdapter'
@@ -47,6 +49,8 @@ export default function RegisterTaskPage() {
   const [icloudAccounts, setIcloudAccounts] = useState<ICloudAccount[]>([])
   const { mode: chatgptRegistrationMode, setMode: setChatgptRegistrationMode } =
     usePersistentChatGPTRegistrationMode()
+  const { registerFlow: chatgptRegisterFlow, setRegisterFlow: setChatgptRegisterFlow } =
+    usePersistentChatGPTRegisterFlow()
 
   useEffect(() => {
     listICloudAccounts()
@@ -185,6 +189,7 @@ export default function RegisterTaskPage() {
       buildChatGPTRegistrationRequestAdapter(
         values.platform,
         chatgptRegistrationMode,
+        chatgptRegisterFlow,
       )
     const adaptedRegisterExtra = chatgptRegistrationRequestAdapter
       ? chatgptRegistrationRequestAdapter.extendExtra(registerExtra)
@@ -306,12 +311,20 @@ export default function RegisterTaskPage() {
             </Form.Item>
           </Space>
           {platform === 'chatgpt' && (
-            <Form.Item label="ChatGPT Token 方案">
-              <ChatGPTRegistrationModeSwitch
-                mode={chatgptRegistrationMode}
-                onChange={setChatgptRegistrationMode}
-              />
-            </Form.Item>
+            <>
+              <Form.Item label="注册方式">
+                <ChatGPTRegisterFlowSelect
+                  flow={chatgptRegisterFlow}
+                  onChange={setChatgptRegisterFlow}
+                />
+              </Form.Item>
+              <Form.Item label="ChatGPT Token 方案">
+                <ChatGPTRegistrationModeSwitch
+                  mode={chatgptRegistrationMode}
+                  onChange={setChatgptRegistrationMode}
+                />
+              </Form.Item>
+            </>
           )}
         </Card>
 
