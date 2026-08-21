@@ -48,14 +48,19 @@ class AttemptResult:
     message: str = ""
     # 有些失败重开一轮也是同样的结局，还要再赔上一次租号和一个半成品账号
     retryable: bool = True
+    # 这一轮用的身份（邮箱或手机号）。多轮重试时只有最终结果才落注册记录，
+    # 所以身份要跟着结果一起交回去。
+    email: str = ""
 
     @classmethod
     def success(cls) -> "AttemptResult":
         return cls(AttemptOutcome.SUCCESS)
 
     @classmethod
-    def failed(cls, message: str, *, retryable: bool = True) -> "AttemptResult":
-        return cls(AttemptOutcome.FAILED, message, retryable=retryable)
+    def failed(
+        cls, message: str, *, retryable: bool = True, email: str = ""
+    ) -> "AttemptResult":
+        return cls(AttemptOutcome.FAILED, message, retryable=retryable, email=email)
 
     @classmethod
     def skipped(cls, message: str) -> "AttemptResult":

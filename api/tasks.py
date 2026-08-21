@@ -31,6 +31,13 @@ _task_store = RegisterTaskStore(
 
 MAX_REGISTER_RETRY_TIMES = 10
 DEFAULT_REGISTER_RETRY_TIMES = 1
+# 「重开也是同样结局」的失败最多连着出现几轮就收手。
+#
+# 手机注册里这类失败（账号已建好、接码平台一条短信都没收到）以前是一票否决：
+# 第一轮撞上就把用户填的重试轮数整个作废，看上去就是「我写了没反应」。可一轮
+# 只用了一个号，凭它断定整个号源都被静默拦码证据太薄 —— 再开一轮确认一下，
+# 连着两轮同样结局才是真的号源问题，那时候继续只会多几个孤号。
+MAX_DEAD_END_ROUNDS = 2
 
 
 def normalize_register_retry_times(value) -> int:
@@ -496,7 +503,17 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                 proxy=proxy,
             )
 
-        total_rounds = 1 + normalize_register_retry_times(req.register_retry_times)
+        retry_times = normalize_register_retry_times(req.register_retry_times)
+        total_rounds = 1 + retry_times
+        if total_rounds > 1:
+            _log(
+                task_id,
+                f"失败重试轮数 {retry_times}：每个账号失败后最多重开 {retry_times} 轮，"
+                f"连同首轮共 {total_rounds} 轮（每轮都是全新的代理/邮箱/号码/会话）",
+            )
+
+        def _is_dead_end(result: AttemptResult) -> bool:
+            return result.outcome == AttemptOutcome.FAILED and not result.retryable
 
         def _do_one(i: int):
             """一个序号的完整交付：失败就整流程重开一轮，直到轮次用尽。
@@ -505,25 +522,37 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
             半路建出来的号已经被占了，拿它死磕只会一直撞同一堵墙。
             """
             result = _do_one_round(i, 1, total_rounds)
+            dead_end_rounds = 1 if _is_dead_end(result) else 0
             for round_no in range(2, total_rounds + 1):
                 if result.outcome != AttemptOutcome.FAILED:
-                    return result
+                    break
                 if control.is_stop_requested():
-                    return result
-                if not result.retryable:
-                    # 号源被静默拦下这类失败，重开一轮只是再租一次号、再造一个孤号
+                    break
+                if dead_end_rounds >= MAX_DEAD_END_ROUNDS:
                     _log(
                         task_id,
-                        f"[RETRY] 第 {i + 1} 个账号这次的失败重开也是同样结局，"
-                        f"跳过剩下 {total_rounds - round_no + 1} 轮: {result.message}",
+                        f"[RETRY] 第 {i + 1} 个账号连续 {dead_end_rounds} 轮都栽在"
+                        f"「重开也是同样结局」的失败上，剩下 "
+                        f"{total_rounds - round_no + 1} 轮不再重开"
+                        f"（再开只会多几个没人认领的号）: {result.message}",
                     )
-                    return result
+                    break
                 _log(
                     task_id,
                     f"[RETRY] 第 {i + 1} 个账号第 {round_no - 1}/{total_rounds} 轮失败，"
-                    f"重开第 {round_no}/{total_rounds} 轮（全新会话）: {result.message}",
+                    f"开始第 {round_no}/{total_rounds} 轮重试（全新会话）: {result.message}",
                 )
                 result = _do_one_round(i, round_no, total_rounds)
+                dead_end_rounds = dead_end_rounds + 1 if _is_dead_end(result) else 0
+            if result.outcome == AttemptOutcome.FAILED:
+                # 注册记录按"一个序号一条结果"记，所以只有跑完所有轮次才落一条
+                # failed；否则重试成功了还会在统计里留下一条失败
+                _save_task_log(
+                    req.platform,
+                    result.email,
+                    "failed",
+                    error=result.message,
+                )
             return result
 
         def _do_one_round(i: int, round_no: int, rounds: int):
@@ -531,7 +560,6 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
             _proxy = None
             current_email = req.email or ""
             attempt_id: int | None = None
-            is_last_round = round_no >= rounds
             round_suffix = f"（第 {round_no}/{rounds} 轮）" if rounds > 1 else ""
             try:
                 control.checkpoint()
@@ -654,17 +682,11 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                 if _proxy:
                     _proxy_pool.report_fail(_proxy)
                 _log(task_id, f"[FAIL] 注册失败{round_suffix}: {e}")
-                retryable = not isinstance(e, NonRetryableRegisterError)
-                # 中间轮次的失败只写任务日志：注册记录按"一个序号一条结果"记，
-                # 否则重试成功了还会在统计里留下一条失败
-                if is_last_round or not retryable:
-                    _save_task_log(
-                        req.platform,
-                        current_email,
-                        "failed",
-                        error=str(e),
-                    )
-                return AttemptResult.failed(str(e), retryable=retryable)
+                return AttemptResult.failed(
+                    str(e),
+                    retryable=not isinstance(e, NonRetryableRegisterError),
+                    email=current_email,
+                )
             finally:
                 control.finish_attempt(attempt_id)
 

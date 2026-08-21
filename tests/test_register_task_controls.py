@@ -125,11 +125,12 @@ class _FlakyPlatform(BasePlatform):
 class RegisterRetryRoundsTests(unittest.TestCase):
     """整流程重试：一次失败不该直接把这个序号判死。"""
 
-    def _run(self, task_id: str, *, fail_times: int, retry_times: int):
+    def _run(self, task_id: str, *, fail_times: int, retry_times: int, email: str = None):
         req = RegisterTaskRequest(
             platform="chatgpt",
             count=1,
             concurrency=1,
+            email=email,
             register_retry_times=retry_times,
             extra={"mail_provider": "fake"},
         )
@@ -157,7 +158,7 @@ class RegisterRetryRoundsTests(unittest.TestCase):
         self.assertEqual(snapshot["success"], 1)
         self.assertEqual(snapshot["errors"], [])
         self.assertEqual(_FlakyPlatform.attempts, 2)
-        self.assertIn("重开第 2/2 轮", joined)
+        self.assertIn("开始第 2/2 轮重试", joined)
         self.assertIn("开始注册第 1/1 个账号（第 2/2 轮）", joined)
         # 中途失败不该在注册记录里留下一条 failed，否则统计会双记
         self.assertEqual([args[2] for args, _ in saved_logs], ["success"])
@@ -170,6 +171,17 @@ class RegisterRetryRoundsTests(unittest.TestCase):
         self.assertEqual(_FlakyPlatform.attempts, 3)
         self.assertEqual([args[2] for args, _ in saved_logs], ["failed"])
 
+    def test_the_recorded_failure_keeps_the_identity_of_the_last_round(self):
+        """收尾那条 failed 记录得带上身份，否则任务历史里只剩一行没有主语的报错。"""
+        _snapshot, saved_logs = self._run(
+            "task-retry-identity",
+            fail_times=5,
+            retry_times=1,
+            email="fixed@example.com",
+        )
+
+        self.assertEqual([args[1] for args, _ in saved_logs], ["fixed@example.com"])
+
     def test_zero_retries_keeps_the_old_single_round_behaviour(self):
         snapshot, _saved = self._run("task-retry-disabled", fail_times=5, retry_times=0)
         joined = "\n".join(snapshot["logs"])
@@ -179,6 +191,15 @@ class RegisterRetryRoundsTests(unittest.TestCase):
         self.assertNotIn("[RETRY]", joined)
         # 只有一轮时日志不该多出"第 x/y 轮"的噪声
         self.assertIn("开始注册第 1/1 个账号\n", joined + "\n")
+        self.assertNotIn("失败重试轮数", joined)
+
+    def test_the_configured_rounds_are_announced_up_front(self):
+        """填了轮数就得在日志里看得见，否则用户只能猜这个框有没有生效。"""
+        snapshot, _saved = self._run("task-retry-announced", fail_times=0, retry_times=3)
+        joined = "\n".join(snapshot["logs"])
+
+        self.assertIn("失败重试轮数 3", joined)
+        self.assertIn("共 4 轮", joined)
 
 
 class _DeadEndPlatform(_FlakyPlatform):
@@ -191,23 +212,39 @@ class _DeadEndPlatform(_FlakyPlatform):
         raise NonRetryableRegisterError("手机号 +2349157587437 的账号已在 OpenAI 侧创建")
 
 
-class NonRetryableFailureTests(unittest.TestCase):
-    """号源被静默拦下时，多开几轮只会多几个孤号。"""
+class _DeadEndThenFinePlatform(_FlakyPlatform):
+    """第一轮撞上"重开也没用"，第二轮正常注册出账号。"""
 
-    def test_dead_end_failure_skips_the_remaining_rounds(self):
+    attempts = 0
+
+    def register(self, email: str, password: str = None) -> Account:
+        type(self).attempts += 1
+        if type(self).attempts == 1:
+            raise NonRetryableRegisterError("手机号 +2349157587437 的账号已在 OpenAI 侧创建")
+        return Account(
+            platform="chatgpt",
+            email="rescued@example.com",
+            password=password or "pw",
+        )
+
+
+class NonRetryableFailureTests(unittest.TestCase):
+    """号源被静默拦下时多开几轮只会多几个孤号 —— 但一轮的证据太薄。"""
+
+    def _run(self, task_id: str, platform_cls, *, retry_times: int):
         req = RegisterTaskRequest(
             platform="chatgpt",
             count=1,
             concurrency=1,
-            register_retry_times=4,
+            register_retry_times=retry_times,
             extra={"mail_provider": "fake"},
         )
-        _create_task_record("task-retry-dead-end", req, "manual", None)
-        _DeadEndPlatform.attempts = 0
+        _create_task_record(task_id, req, "manual", None)
+        platform_cls.attempts = 0
         saved_logs: list[tuple] = []
 
         with (
-            patch("core.registry.get", return_value=_DeadEndPlatform),
+            patch("core.registry.get", return_value=platform_cls),
             patch("core.base_mailbox.create_mailbox", return_value=_FakeMailbox()),
             patch("core.db.save_account", side_effect=lambda account: account),
             patch(
@@ -215,16 +252,42 @@ class NonRetryableFailureTests(unittest.TestCase):
                 side_effect=lambda *args, **kwargs: saved_logs.append((args, kwargs)),
             ),
         ):
-            _run_register("task-retry-dead-end", req)
+            _run_register(task_id, req)
 
-        snapshot = _task_store.snapshot("task-retry-dead-end")
+        return _task_store.snapshot(task_id), saved_logs
+
+    def test_dead_end_still_gets_one_confirming_round(self):
+        """一轮零短信不足以判死整个号源，用户填的轮数至少得动起来。"""
+        snapshot, saved_logs = self._run(
+            "task-retry-dead-end", _DeadEndPlatform, retry_times=4
+        )
         joined = "\n".join(snapshot["logs"])
 
-        self.assertEqual(_DeadEndPlatform.attempts, 1)
-        self.assertIn("跳过剩下 4 轮", joined)
+        self.assertEqual(_DeadEndPlatform.attempts, 2)
+        self.assertIn("开始第 2/5 轮重试", joined)
+        self.assertIn("连续 2 轮", joined)
+        self.assertIn("剩下 3 轮不再重开", joined)
         self.assertEqual(len(snapshot["errors"]), 1)
         # 提前收手也要落一条 failed 记录，否则这个序号在统计里凭空消失
         self.assertEqual([args[2] for args, _ in saved_logs], ["failed"])
+
+    def test_the_confirming_round_can_still_succeed(self):
+        snapshot, saved_logs = self._run(
+            "task-retry-dead-end-rescued", _DeadEndThenFinePlatform, retry_times=4
+        )
+
+        self.assertEqual(_DeadEndThenFinePlatform.attempts, 2)
+        self.assertEqual(snapshot["success"], 1)
+        self.assertEqual(snapshot["errors"], [])
+        self.assertEqual([args[2] for args, _ in saved_logs], ["success"])
+
+    def test_zero_retries_still_means_a_single_round(self):
+        snapshot, _saved = self._run(
+            "task-retry-dead-end-no-budget", _DeadEndPlatform, retry_times=0
+        )
+
+        self.assertEqual(_DeadEndPlatform.attempts, 1)
+        self.assertEqual(len(snapshot["errors"]), 1)
 
 
 class RegisterRetryTimesNormalisationTests(unittest.TestCase):
