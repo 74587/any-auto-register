@@ -488,9 +488,8 @@ class PhoneRegisterLoopTests(unittest.TestCase):
 
         def _continue(phone, sentinel):
             raise RuntimeError(
-                "authorize/continue 失败(screen_hint=signup): HTTP 400 body="
-                '{"error": {"message": "Phone number already in use. Please try again.",'
-                ' "code": "phone_number_in_use"}}'
+                "authorize/continue 失败(screen_hint=signup): HTTP 400 req_id=4082fdc9 "
+                "Phone number already in use. Please try again. phone_number_in_use"
             )
 
         flow.phone_authorize_continue = _continue
@@ -626,17 +625,26 @@ class SendPhoneOtpTests(unittest.TestCase):
             flow.session.calls[-1]["json"], {"phone_number": "+56971901026", "channel": "sms"}
         )
 
-    def test_logs_the_server_reply_verbatim(self):
-        """HTTP 200 只说明这一步被受理了，短信往哪儿发全在响应体里。"""
-        body = '{"page":{"type":"contact_verification"},"channel":"whatsapp"}'
-        flow = self._flow([_FakeResponse(text=body, payload={"page": {"type": "contact_verification"}})])
+    def test_logs_the_next_step_not_the_whole_body(self):
+        """HTTP 200 只说明这一步被受理了，日志要的是下一步，不是整段 JSON。"""
+        body = '{"page":{"type":"contact_verification"},"channel":"whatsapp","continue_url":"https://auth.openai.com/contact-verification"}'
+        payload = {
+            "page": {"type": "contact_verification"},
+            "channel": "whatsapp",
+            "continue_url": "https://auth.openai.com/contact-verification",
+        }
+        flow = self._flow([_FakeResponse(text=body, payload=payload)])
 
         with self.assertLogs("platforms.chatgpt.protocol.phone_flow", level="INFO") as logs:
             flow.send_phone_otp("+56971901026")
 
         joined = "\n".join(logs.output)
-        self.assertIn(body, joined)
+        self.assertIn("page=contact_verification", joined)
+        self.assertIn("continue=https://auth.openai.com/contact-verification", joined)
+        # 通道异常仍要提醒，但响应体本身不该刷进日志
         self.assertIn("WhatsApp", joined)
+        self.assertNotIn(body, joined)
+        self.assertNotIn('"channel"', joined)
 
     def test_reports_every_endpoint_it_tried(self):
         flow = self._flow([_FakeResponse(status_code=400, text="invalid authorization step")] * 3)

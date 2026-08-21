@@ -34,6 +34,7 @@ import time
 from typing import Any, Optional
 
 from platforms.chatgpt.protocol.mail_provider import MailProvider
+from platforms.chatgpt.protocol.response_summary import describe_error, describe_page
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +203,7 @@ class PhoneRegisterMixin:
         self._trace_http("phone_register_user", resp)
         if resp.status_code != 200:
             raise RuntimeError(
-                f"手机号注册失败: HTTP {resp.status_code} - {(resp.text or '')[:220]}"
+                f"手机号注册失败: HTTP {resp.status_code} - {describe_error(resp.text)}"
             )
 
         # 密码只活在内存里，后面任何一步挂掉这个号就再也登不进去了，先落盘。
@@ -260,22 +261,23 @@ class PhoneRegisterMixin:
 
             self._trace_http(f"phone_otp_send_{method.lower()}", resp)
             if resp.status_code == 200:
-                # 只打一句"发码成功"等于什么都没说：HTTP 200 只代表服务端受理了这一步，
-                # 短信到底往哪儿发、走的什么通道，全在响应体里。
                 raw = (resp.text or "").strip()
+                try:
+                    payload = resp.json() or {}
+                except Exception:
+                    payload = {}
+                # HTTP 200 只代表服务端受理了这一步，真正指示下一步的是 page/continue；
+                # 整段 JSON 留给 AUTH_HTTP_TRACE，别刷进任务日志。
                 logger.info(
-                    "[手机注册] 发码请求已被受理: %s %s → HTTP 200 body=%s",
+                    "[手机注册] 发码请求已被受理: %s %s → HTTP 200 %s",
                     method,
                     url,
-                    raw[:400] or "(空)",
+                    describe_page(payload) or "(无 page 信息)",
                 )
                 self._warn_if_not_sms_channel(raw)
-                try:
-                    return resp.json() or {}
-                except Exception:
-                    return {}
+                return payload
 
-            detail = (resp.text or "")[:200]
+            detail = describe_error(resp.text)
             failures.append(f"{method} {url} → HTTP {resp.status_code} {detail}")
             logger.warning(
                 "[手机注册] 发码未成功: %s %s → HTTP %s %s", method, url, resp.status_code, detail
@@ -316,13 +318,9 @@ class PhoneRegisterMixin:
         )
         self._trace_http("add_email_send", resp)
         if resp.status_code != 200:
-            try:
-                error = (resp.json() or {}).get("error") or {}
-                message = error.get("message") or error.get("code") or ""
-            except Exception:
-                message = ""
             raise RuntimeError(
-                message or f"add-email/send 失败: HTTP {resp.status_code} - {(resp.text or '')[:220]}"
+                describe_error(resp.text)
+                or f"add-email/send 失败: HTTP {resp.status_code}"
             )
         try:
             return resp.json() or {}
