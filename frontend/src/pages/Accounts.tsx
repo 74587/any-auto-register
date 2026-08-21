@@ -1626,7 +1626,7 @@ export default function Accounts() {
               name="register_retry_times"
               label="失败重试轮数"
               initialValue={DEFAULT_REGISTER_RETRY_TIMES}
-              tooltip="整条注册流程失败后自动重开一轮：换新邮箱 / 新号码 / 新会话。0 表示失败即止。"
+              tooltip="整条注册流程失败后自动重开一轮：换新邮箱 / 新号码 / 新会话。0 表示失败即止。手机注册连续两轮都「建出了号却一条短信都没收到」时会提前收手，不再多造孤号。"
             >
               <InputNumber min={0} max={10} precision={0} style={{ width: '100%' }} placeholder="1" />
             </Form.Item>

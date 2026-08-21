@@ -636,10 +636,31 @@ class PhoneRegisterLoopTests(unittest.TestCase):
         }
         flow.phone_register_user = lambda phone: {"page": {"type": "phone_otp_verification"}}
 
-        with self.assertRaises(PhoneAccountCreatedError):
+        with self.assertRaises(PhoneAccountCreatedError) as ctx:
             flow._do_phone_register_loop(ctrl)
 
         self.assertEqual(len(ctrl.rented), 1)
+        # 一条短信都没进来：这才是"号源被静默拦下"该有的证据
+        self.assertFalse(ctx.exception.retryable)
+
+    def test_a_code_that_did_arrive_keeps_the_round_retryable(self):
+        """码进来了、后面才崩 —— 号源是活的，外层重开一轮有真机会。"""
+        ctrl = _FakeController(max_attempts=3)
+        flow = _loop_flow()
+        flow.phone_authorize_continue = lambda phone, sentinel: {
+            "page": {"type": "create_account_password"}
+        }
+        flow.phone_register_user = lambda phone: {"page": {"type": "phone_otp_verification"}}
+
+        def _validate(code, referer=""):
+            raise RuntimeError("phone-otp/validate 超时")
+
+        flow._phone_otp_validate = _validate
+
+        with self.assertRaises(PhoneAccountCreatedError) as ctx:
+            flow._do_phone_register_loop(ctrl)
+
+        self.assertTrue(ctx.exception.retryable)
 
 
 class PhoneAccountCreatedMessageTests(unittest.TestCase):
@@ -661,6 +682,23 @@ class PhoneAccountCreatedMessageTests(unittest.TestCase):
             "phone-otp/validate 返回 400", phone="+66968649749", password="pw"
         )
         self.assertTrue(err.retryable)
+
+    def test_an_unrelated_timeout_is_not_a_dead_end(self):
+        """以前"超时"两个字就够判死一整轮，换 RT 慢一点都会连累用户填的重试轮数。"""
+        err = PhoneAccountCreatedError(
+            "Codex 换 refresh_token 超时", phone="+66968649749", password="pw"
+        )
+        self.assertTrue(err.retryable)
+
+    def test_a_code_that_arrived_earlier_outweighs_a_later_timeout(self):
+        err = PhoneAccountCreatedError(
+            "号 +66968649749 在 150s 内没收到短信",
+            phone="+66968649749",
+            password="pw",
+            sms_ever_received=True,
+        )
+        self.assertTrue(err.retryable)
+        self.assertNotIn("接码平台全程没收到任何短信", str(err))
 
 
 class SendPhoneOtpTests(unittest.TestCase):

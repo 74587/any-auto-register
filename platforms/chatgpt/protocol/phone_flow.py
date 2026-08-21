@@ -91,6 +91,10 @@ def is_flow_state_error(text: str) -> bool:
 class PhoneRegisterMixin:
     """手机号注册 + 绑定邮箱。混进 ``AuthFlow``，共用同一个 session 和结果对象。"""
 
+    # 这一轮里接码平台有没有吐出过验证码。零短信是判定"号源被静默拦下"的唯一
+    # 硬证据，外层要靠它决定还值不值得再开一轮。
+    _phone_sms_ever_received = False
+
     # ── 状态判定 ──
 
     @staticmethod
@@ -520,6 +524,7 @@ class PhoneRegisterMixin:
         last_err: Optional[Exception] = None
         repeated_err = ""
         repeated_count = 0
+        self._phone_sms_ever_received = False
 
         for attempt in range(1, max_phone_attempts + 1):
             logger.info("[手机注册] 🔁 第 %d/%d 个号尝试...", attempt, max_phone_attempts)
@@ -690,7 +695,10 @@ class PhoneRegisterMixin:
         except Exception as exc:
             cause = getattr(exc, "cause", exc)
             raise PhoneAccountCreatedError(
-                str(cause), phone=phone, password=self.result.password
+                str(cause),
+                phone=phone,
+                password=self.result.password,
+                sms_ever_received=self._phone_sms_ever_received,
             ) from cause
 
     def _continue_after_phone_verified(
@@ -788,6 +796,7 @@ class PhoneRegisterMixin:
             code = ctrl.get_code(timeout=int(remaining))
             if not code:
                 break
+            self._phone_sms_ever_received = True
             if code in seen_codes:
                 logger.warning("[手机注册] 收到重复验证码 %s，跳过", code)
                 continue
@@ -890,14 +899,24 @@ class PhoneAccountCreatedError(RuntimeError):
     此为止。报错里带上手机号和密码：这两样是把号找回来的唯一线索。
     """
 
-    def __init__(self, reason: str, *, phone: str, password: str = ""):
+    def __init__(
+        self,
+        reason: str,
+        *,
+        phone: str,
+        password: str = "",
+        sms_ever_received: Optional[bool] = None,
+    ):
         self.phone = phone
         self.password = password
         self.reason = reason
         # 发码请求被受理、接码平台却一条短信都没收到 —— 这是号源被静默拦下，
-        # 不是这一次运气差。整条流程重开只会用同样的号源再造一个孤号，所以
-        # 明确标成"别重试"，让外层把剩下的轮次省下来。
-        self.sms_never_arrived = "没收到短信" in reason or "超时" in reason
+        # 不是这一次运气差，所以标成"重开也是同样结局"让外层少赔几轮。
+        #
+        # 判据只有一个：这一轮从头到尾有没有从接码平台拿到过验证码。以前是拿
+        # 错误文本猜的，"超时"两个字太宽 —— 换 RT 超时、网络超时都会被误判成
+        # 号源问题，用户填的重试轮数就这么被无声地作废了。
+        self.sms_never_arrived = "没收到短信" in reason and sms_ever_received is not True
         self.retryable = not self.sms_never_arrived
         detail = f"手机号 {phone} 的账号已在 OpenAI 侧创建"
         if password:
