@@ -24,9 +24,6 @@ class _FakeController:
         self.refunds: list[str] = []
         self.cleanups = 0
 
-    def set_resend_callback(self, callback):
-        pass
-
     def get_phone(self) -> str:
         phone = f"+234900000{len(self.rented):04d}"
         self.rented.append(phone)

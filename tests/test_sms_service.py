@@ -290,6 +290,18 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         with mock.patch.object(provider, "get_status_v2", return_value={"status": "cancel"}):
             self.assertIsNone(provider.wait_for_code("9001", timeout=5))
 
+    def test_waiting_only_polls_and_never_asks_for_a_resend(self):
+        """等码期间只查状态：催发换不来第二条短信，只会把当前 challenge 弄坏。"""
+        provider = SmsActivateProvider(api_key="k")
+        with mock.patch.object(provider, "_request", return_value=_Resp("STATUS_WAIT_CODE")) as req:
+            self.assertIsNone(provider.wait_for_code("9001", timeout=1, poll=1))
+
+        actions = {call.args[0].get("action") for call in req.call_args_list}
+        self.assertEqual(actions, {"getStatusV2", "getStatus"})
+        self.assertFalse(
+            [call for call in req.call_args_list if call.args[0].get("status") == 3]
+        )
+
 
 class ProviderFactoryTests(unittest.TestCase):
     def test_unknown_provider_is_rejected(self):

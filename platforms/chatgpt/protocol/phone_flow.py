@@ -221,9 +221,11 @@ class PhoneRegisterMixin:
         """让 OpenAI 把验证码发到这个号上。
 
         走哪个接口由服务端当前停在哪一步决定，``continue_url`` 就是它给的指引。
-        指引没命中时按可能性从高到低试：phone-otp/send（注册链）→ phone-otp/resend
-        （已经发过一次）→ add-phone/send（流程停在 /add-phone 页）。每一发都记下
-        服务端的原话，全失败时一起抛出去，免得只剩一句没有上下文的报错。
+        指引没命中时按可能性从高到低试：phone-otp/send（注册链）→ add-phone/send
+        （流程停在 /add-phone 页）。每一发都记下服务端的原话，全失败时一起抛出去，
+        免得只剩一句没有上下文的报错。
+
+        这里只负责把码发出去一次，之后就是纯等：resend 换不来第二条短信。
         """
         send_url = "https://auth.openai.com/api/accounts/phone-otp/send"
         hinted = (continue_url or "").split("?")[0].strip()
@@ -236,12 +238,6 @@ class PhoneRegisterMixin:
         candidates = [
             ("GET", send_url, None, "https://auth.openai.com/create-account/password"),
             ("POST", send_url, payload, "https://auth.openai.com/create-account/password"),
-            (
-                "POST",
-                "https://auth.openai.com/api/accounts/phone-otp/resend",
-                None,
-                "https://auth.openai.com/phone-verification",
-            ),
             (
                 "POST",
                 "https://auth.openai.com/api/accounts/add-phone/send",
@@ -397,11 +393,6 @@ class PhoneRegisterMixin:
             )
 
         ctrl = self._sms_callback
-        try:
-            ctrl.set_resend_callback(self._phone_otp_resend)
-        except Exception:
-            pass
-
         try:
             continue_url, auth_url = self._do_phone_register_loop(ctrl)
         finally:

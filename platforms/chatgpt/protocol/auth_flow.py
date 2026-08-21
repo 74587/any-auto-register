@@ -926,16 +926,6 @@ class AuthFlow(PhoneRegisterMixin):
         except Exception:
             return {}
 
-    def _phone_otp_resend(self) -> bool:
-        headers = self._phone_headers("https://auth.openai.com/phone-verification")
-        resp = self.session.post(
-            "https://auth.openai.com/api/accounts/phone-otp/resend",
-            headers=headers,
-            timeout=30,
-        )
-        self._trace_http("phone_otp_resend", resp)
-        return resp.status_code == 200
-
     def _phone_otp_validate(self, code: str, referer: str = "") -> dict:
         # 同一个接口在不同链路上的来源页不一样：绑手机是 /phone-verification，
         # 手机号注册停在 /contact-verification，referer 对不上容易被风控盯上。
@@ -1009,14 +999,10 @@ class AuthFlow(PhoneRegisterMixin):
         """走 SMS 接码 controller：租号 → add-phone/send → 等 SMS → validate。
 
         支持平台：SmsBower（smsbower.page）。
-        单号窗口 80s（每 20s × 3 触发一次 OpenAI 端 resend）；失败自动 cancel + 换新号。
+        单号窗口 80s，窗口内只轮询接码平台收码；失败自动 cancel + 换新号。
         最多换号次数默认 3，主人可在 WebUI / 环境变量 OPENAI_PHONE_MAX_ATTEMPTS 自定义。
         """
         ctrl = self._sms_callback
-        try:
-            ctrl.set_resend_callback(self._phone_otp_resend)
-        except Exception:
-            pass
 
         # 用 try/finally 保证即使 for 循环抛异常，也能 release lock + 最后一次 cleanup
         try:
@@ -1181,7 +1167,7 @@ class AuthFlow(PhoneRegisterMixin):
             repeated_err = ""
             repeated_count = 0
 
-            # 阶段 3：等 SMS code（SmsBower 内部会按 20s × 3 调 OpenAI resend）
+            # 阶段 3：等 SMS code（窗口内只轮询接码平台，不去催发）
             phone_start = time.time()
             seen_codes: set[str] = set()
             code_attempt = 0
@@ -1284,10 +1270,6 @@ class AuthFlow(PhoneRegisterMixin):
             except Exception as e:
                 last_err = str(e)
                 logger.warning("add-phone 号码 %s 失败: %s", phone, e)
-                try:
-                    self._phone_otp_resend()
-                except Exception:
-                    pass
 
         if last_err:
             logger.warning("add-phone 阶段未成功: %s", last_err)

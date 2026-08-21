@@ -98,16 +98,13 @@ class BaseSmsProvider(ABC):
         return True
 
     def mark_code_failed(self, activation_id: str, reason: str = "") -> None:
-        """业务侧收到码但 validate 失败 → 请求 resend。"""
+        """业务侧收到码但 validate 失败 → 记下这个码，别再拿它去验。"""
 
     def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
         """业务侧拒绝该手机号（add-phone/send 返错）→ 停止复用并退款。"""
 
     def mark_send_succeeded(self, activation_id: str) -> None:
         """业务侧已成功触发短信发送（add-phone/send 200）。"""
-
-    def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
-        """注册 resend 钩子，长等待时回调业务侧重新触发 OTP。"""
 
 
 SMS_COUNTRY_NAMES_CN: dict[str, str] = {
@@ -247,7 +244,6 @@ class SmsActivateProvider(BaseSmsProvider):
         self._proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
         self.reuse_phone_to_max = bool(reuse_phone_to_max)
         self.phone_success_max = max(0, int(phone_success_max or 0))
-        self._resend_callback: Optional[Callable[[], None]] = None
         self.last_code_result: Optional[dict] = None
         self.current_activation: Optional[SmsActivation] = None
 
@@ -630,32 +626,20 @@ class SmsActivateProvider(BaseSmsProvider):
                     return candidate
         return {"status": "wait_code"}
 
-    def request_resend_sms(self, activation_id: str) -> bool:
-        try:
-            self._request({"action": "setStatus", "id": activation_id, "status": 3})
-            return True
-        except Exception:
-            return False
-
     def wait_for_code(
         self,
         activation_id: str,
         *,
         timeout: int = 80,
         poll: int = 3,
-        openai_resend_interval: int = 20,
-        openai_resend_max: int = 3,
     ) -> Optional[dict]:
-        """等短信验证码。
+        """等短信验证码：只轮询接码平台，不去催发。
 
-        每 ``openai_resend_interval`` 秒触发一次业务侧 resend（最多
-        ``openai_resend_max`` 次）并同步请求平台侧 resend；超时返回 None，
-        由上层 cancel 换号。
+        码是 OpenAI 那边一次性发出来的，催发既换不来第二条短信，还会把当前这条
+        challenge 弄失效。超时返回 None，由上层 cancel 换号。
         """
         start = time.time()
         deadline = start + timeout
-        resend_count = 0
-        last_platform_resend = start
         with _SMS_CACHE_LOCK:
             used_codes = set((_SMS_CACHE or {}).get("used_codes") or [])
 
@@ -680,26 +664,6 @@ class SmsActivateProvider(BaseSmsProvider):
                             "code": code,
                             "sms_key": result.get("sms_key") or "",
                         }
-
-            elapsed = time.time() - start
-            expected_resend = min(openai_resend_max, int(elapsed // openai_resend_interval))
-            if expected_resend > resend_count and self._resend_callback:
-                try:
-                    self._resend_callback()
-                    resend_count = expected_resend
-                    logger.info(
-                        "已请求业务侧 resend (第 %d/%d 次, elapsed=%ds)",
-                        resend_count,
-                        openai_resend_max,
-                        int(elapsed),
-                    )
-                except Exception as exc:
-                    logger.warning("业务侧 resend 回调失败: %s", exc)
-                self.request_resend_sms(activation_id)
-                last_platform_resend = time.time()
-            elif time.time() - last_platform_resend >= openai_resend_interval:
-                self.request_resend_sms(activation_id)
-                last_platform_resend = time.time()
 
             time.sleep(poll)
         return None
@@ -779,12 +743,6 @@ class SmsActivateProvider(BaseSmsProvider):
                     used.add(self.last_code_result["code"])
                     cache["used_codes"] = used
                 self._save_cache(cache)
-        if self._resend_callback:
-            try:
-                self._resend_callback()
-            except Exception:
-                pass
-        self.request_resend_sms(activation_id)
 
     def mark_send_succeeded(self, activation_id: str) -> None:
         try:
@@ -813,9 +771,6 @@ class SmsActivateProvider(BaseSmsProvider):
                 cache["stop_reason"] = reason or "号码被业务侧拒绝"
                 self._save_cache(cache)
                 self._clear_cache()
-
-    def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
-        self._resend_callback = callback
 
 
 def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
@@ -1010,12 +965,6 @@ class PhoneCallbackController:
                 self.provider.mark_send_failed(self.activation.activation_id, reason=reason)
             except Exception:
                 pass
-
-    def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
-        try:
-            self._ensure_provider().set_resend_callback(callback)
-        except Exception:
-            pass
 
     def cleanup(self) -> None:
         """流程结束（成功或失败）调用：释放未完成的号并解锁。"""

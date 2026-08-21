@@ -293,9 +293,6 @@ class _FakeController:
         self.cleanups = 0
         self.successes = 0
 
-    def set_resend_callback(self, callback):
-        pass
-
     def get_phone(self):
         phone = f"+5697190{len(self.rented):04d}"
         self.rented.append(phone)
@@ -584,18 +581,17 @@ class SendPhoneOtpTests(unittest.TestCase):
         flow = self._flow([
             _FakeResponse(status_code=405, text="method not allowed"),
             _FakeResponse(status_code=400, text="invalid authorization step"),
-            _FakeResponse(status_code=400, text="invalid authorization step"),
             _FakeResponse(payload={"page": {"type": "phone_otp_verification"}}),
         ])
 
         flow.send_phone_otp("+56971901026")
 
+        # 只发一次码，不碰任何 resend 接口
         self.assertEqual(
             [(call["method"], call["url"].rsplit("/accounts/", 1)[-1]) for call in flow.session.calls],
             [
                 ("GET", "phone-otp/send"),
                 ("POST", "phone-otp/send"),
-                ("POST", "phone-otp/resend"),
                 ("POST", "add-phone/send"),
             ],
         )
@@ -604,7 +600,7 @@ class SendPhoneOtpTests(unittest.TestCase):
         )
 
     def test_reports_every_endpoint_it_tried(self):
-        flow = self._flow([_FakeResponse(status_code=400, text="invalid authorization step")] * 4)
+        flow = self._flow([_FakeResponse(status_code=400, text="invalid authorization step")] * 3)
 
         with self.assertRaises(RuntimeError) as ctx:
             flow.send_phone_otp("+56971901026")
