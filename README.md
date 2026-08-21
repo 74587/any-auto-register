@@ -75,7 +75,7 @@
 | Logo | 名称 | 介绍 | 官网 |
 | --- | --- | --- | --- |
 | <a href="https://www.rapidproxy.io/?code=IFZZROPF1" target="_blank"><img src="frontend/public/RapidProxy.png" alt="RapidProxy" width="140" /></a> | RapidProxy | RapidProxy 为自动化注册与账号管理场景提供稳定的代理支持。<br><br>RapidProxy 提供全球住宅 IP 网络，支持智能轮换、稳定 Session 和高并发请求，帮助开发者更高效地完成批量任务，优化自动化执行环境。<br><br>动态住宅代理低至 $0.55/GB，流量长期有效不过期。<br><br>**适用场景：**<br>自动化注册 / 浏览器自动化（Playwright、Selenium）/ 多账号环境管理 / 数据采集任务<br><br>注册可送 500MB 免费测试，邀请好友即可赚取高达 15% 的佣金！<br><br>**专属优惠码：RAPID10（优惠 10%）** | [https://www.rapidproxy.io/?code=IFZZROPF1](https://www.rapidproxy.io/?code=IFZZROPF1) |
-| <a href="https://www.ipwo.net/?ref=githubanyautoregister" target="_blank"><img src="frontend/public/ipwo.png" alt="IPWO" width="140" /></a> | IPWO | IPWO 住宅代理适用于浏览器自动化、多地区网络访问、数据采集及在线业务测试等场景。<br><br>对于 any-auto-register 这类涉及浏览器自动化、代理池管理和多环境运行的项目，IPWO 住宅代理可用于配置不同浏览器会话的网络环境，支持灵活的 IP 切换与地区选择，为自动化任务提供更加便捷的代理接入方式。<br><br>提供 195+ 地区动静态 IP 资源，支持 http/https/socks5 协议，免费测试，**专属 90 折扣码“0204”**。 | [https://www.ipwo.net/?ref=githubanyautoregister](https://www.ipwo.net/?ref=githubanyautoregister) |
+| <a href="https://www.ipwo.net/?ref=githubanyautoregister" target="_blank"><img src="frontend/public/ipwo.png" alt="IPWO" width="140" /></a> | IPWO | IPWO 住宅代理适用于浏览器自动化、多地区网络访问、数据采集及在线业务测试等场景。<br><br>对于 any-auto-register 这类涉及浏览器自动化、代理池管理和多环境运行的项目，IPWO 住宅代理可用于配置不同浏览器会话的网络环境，支持灵活的 IP 切换与地区选择，为自动化任务提供更加便捷的代理接入方式。<br><br>提供 195+ 地区动静态 IP 资源，支持 http/https/socks5 协议，免费测试。<br><br>**专属 90 折扣码：“0204”** | [https://www.ipwo.net/?ref=githubanyautoregister](https://www.ipwo.net/?ref=githubanyautoregister) |
 
 ## 界面预览
 
