@@ -158,18 +158,6 @@ function AppContent() {
             }}
           >
             <DashboardOutlined style={{ fontSize: 20, color: 'var(--accent)' }} />
-            {!collapsed && (
-              <span
-                style={{
-                  marginLeft: 8,
-                  fontWeight: 600,
-                  fontSize: 14,
-                  color: 'var(--text)',
-                }}
-              >
-                Account Manager
-              </span>
-            )}
           </div>
           <Menu
             mode="inline"
