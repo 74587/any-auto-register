@@ -155,7 +155,7 @@ Trang tác vụ đăng ký và hộp thoại đăng ký ChatGPT còn có công t
 
 Khóa bí mật được lưu cùng tài khoản (`totp_secret` trong `extra`) và có thể sao chép vào app xác thực từ ba chỗ: nhãn **2FA 已绑** trong danh sách, mục **复制 2FA 密钥 (Sao chép khóa 2FA)** trong menu thao tác, và ô khóa trong chi tiết tài khoản. Hộp thoại sau khi liên kết thủ công cũng hiển thị khóa kèm nút sao chép riêng, và khóa vẫn được in một lần trong nhật ký tác vụ. Cần lấy khóa hàng loạt thì dùng định dạng xuất kiểu `email----mật khẩu----2FA`.
 
-Tài khoản cũ trong kho có thể liên kết riêng từ menu thao tác tài khoản (**绑定 2FA**), cũng thử dùng lại phiên trước rồi mới đăng nhập lại.
+Tài khoản cũ trong kho có thể liên kết riêng từ menu thao tác tài khoản (**绑定 2FA**), cũng thử dùng lại phiên trước rồi mới đăng nhập lại. Giống **补 RT (bù RT)**, thao tác này chạy như một tác vụ nền: cửa sổ nhật ký mở ra ngay để bạn thấy nó đi đường nào, có đang chờ mã qua email hay không, và có thể dừng giữa chừng. Khi thành công, khóa được in trong nhật ký và hiện lại ở khối có nút sao chép trên đầu cửa sổ.
 
 > ⚠️ Máy chủ chỉ phát khóa bí mật đúng một lần và không API nào lấy lại được. Liên kết có hiệu lực ngay: mọi lần đăng nhập sau đó của tài khoản đều cần mã động. Các luồng bù RT và đăng nhập lại tự tính mã từ khóa đã lưu, nhưng mất khóa là mất luôn tài khoản.
 

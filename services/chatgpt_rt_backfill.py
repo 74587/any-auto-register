@@ -12,15 +12,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Optional
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from core.db import AccountModel
 from platforms.chatgpt.rt_backfill import BackfillResult, RefreshTokenBackfiller
-from services.chatgpt_account_state import filter_accounts_by_plus_status
+from services.chatgpt_account_selection import select_chatgpt_accounts
 
 logger = logging.getLogger(__name__)
-
-MAX_BATCH_ACCOUNTS = 1000
 
 
 def account_refresh_token(model: AccountModel) -> str:
@@ -47,35 +45,15 @@ def select_backfill_targets(
     ``only_missing_rt`` 是默认行为：已经有 RT 的号再跑一遍纯属给 OpenAI 送风控
     素材。想强制重拿（比如怀疑旧 RT 失效）才关掉它。
     """
-    ids = _normalize_ids(account_ids)
-    missing_ids: list[int] = []
-
-    if ids:
-        rows = session.exec(
-            select(AccountModel)
-            .where(AccountModel.platform == "chatgpt")
-            .where(AccountModel.id.in_(ids))
-        ).all()
-        row_map = {row.id: row for row in rows}
-        accounts = [row_map[account_id] for account_id in ids if account_id in row_map]
-        missing_ids = [account_id for account_id in ids if account_id not in row_map]
-    elif all_filtered:
-        query = select(AccountModel).where(AccountModel.platform == "chatgpt")
-        if status:
-            query = query.where(AccountModel.status == status)
-        if email:
-            query = query.where(AccountModel.email.contains(email))
-        accounts = list(session.exec(query).all())
-        if plus_status:
-            accounts = filter_accounts_by_plus_status(accounts, plus_status)
-    else:
-        raise ValueError("请提供 account_ids，或指定 all_filtered=true")
-
-    if only_missing_rt:
-        accounts = [row for row in accounts if account_missing_rt(row)]
-    if len(accounts) > MAX_BATCH_ACCOUNTS:
-        raise ValueError(f"单次最多处理 {MAX_BATCH_ACCOUNTS} 个账号")
-    return accounts, missing_ids
+    return select_chatgpt_accounts(
+        session,
+        account_ids=account_ids,
+        all_filtered=all_filtered,
+        email=email,
+        status=status,
+        plus_status=plus_status,
+        keep=account_missing_rt if only_missing_rt else None,
+    )
 
 
 def backfill_account_data(
@@ -185,21 +163,6 @@ def apply_backfill_result(
         if commit:
             session.commit()
     return patch
-
-
-def _normalize_ids(account_ids: Optional[Iterable[int]]) -> list[int]:
-    ids: list[int] = []
-    seen: set[int] = set()
-    for raw in account_ids or []:
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if value <= 0 or value in seen:
-            continue
-        seen.add(value)
-        ids.append(value)
-    return ids
 
 
 def _load_config() -> dict:
