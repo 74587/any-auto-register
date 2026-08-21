@@ -7,6 +7,8 @@
 
 浏览器抓包下来，手机号这一段的接口顺序是：
 
+    GET  /authorize?...&login_hint=%2B56...    → 302 落到 /create-account/password
+    （login_hint 已经把身份带过去了，浏览器**不会**再打一次 authorize/continue）
     POST /api/accounts/user/register     {"username": "+56...", "password": "..."}
     （服务端要么直接把人放到 /contact-verification 并把短信发出去，要么先停在
       phone_otp_send，等客户端打一次 phone-otp/send 才发）
@@ -625,24 +627,33 @@ class PhoneRegisterMixin:
         csrf_token = self.get_csrf_token()
         auth_url = self.get_auth_url(csrf_token, login_hint=phone)
         device_id = self.auth_oauth_init(auth_url)
-        sentinel = self.get_sentinel_token(device_id)
+        landing_url = str(getattr(self, "_last_auth_landing_url", "") or "").strip()
 
-        try:
-            data = self.phone_authorize_continue(phone, sentinel)
-        except Exception as exc:
-            if is_phone_rejected_error(str(exc)):
-                raise _PhoneUnusable(exc)
-            if is_flow_state_error(str(exc)):
-                raise _PhoneFlowBroken(exc)
-            raise
+        if self._is_create_password_state(continue_url=landing_url):
+            # login_hint 已经把手机号交给服务端了，authorize 直接落在设密码页 ——
+            # 抓包里浏览器此时不会再打一次 authorize/continue（也就不会为它算 PoW），
+            # 多打那一枪等于把同一个身份提交两遍，服务端有理由判 invalid state。
+            page_type = "create_account_password"
+            continue_url = landing_url
+            logger.info("[手机注册] authorize 已凭 login_hint 落到设密码页，跳过 authorize/continue")
+        else:
+            sentinel = self.get_sentinel_token(device_id)
+            try:
+                data = self.phone_authorize_continue(phone, sentinel)
+            except Exception as exc:
+                if is_phone_rejected_error(str(exc)):
+                    raise _PhoneUnusable(exc)
+                if is_flow_state_error(str(exc)):
+                    raise _PhoneFlowBroken(exc)
+                raise
 
-        page_type = self._extract_page_type(data)
-        continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(data))
-        logger.info(
-            "[手机注册] authorize/continue 返回 page=%s continue=%s",
-            page_type or "(empty)",
-            (continue_url or "(empty)")[:160],
-        )
+            page_type = self._extract_page_type(data)
+            continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(data))
+            logger.info(
+                "[手机注册] authorize/continue 返回 page=%s continue=%s",
+                page_type or "(empty)",
+                (continue_url or "(empty)")[:160],
+            )
 
         if self._is_existing_identity_state(page_type, continue_url):
             raise _PhoneUnusable(RuntimeError(f"手机号 {phone} 已被注册过（phone_number_already_in_use）"))

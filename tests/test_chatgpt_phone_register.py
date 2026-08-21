@@ -389,6 +389,67 @@ class PhoneRegisterLoopTests(unittest.TestCase):
 
         self.assertEqual(len(ctrl.rented), 3)
 
+    def test_login_hint_landing_on_the_password_page_skips_authorize_continue(self):
+        """抓包里 login_hint 已经把身份带过去了，浏览器不会再提交一次。
+
+        多打那一枪等于把同一个手机号交两遍，服务端有理由判 invalid state。
+        """
+        ctrl = _FakeController()
+        flow = _loop_flow()
+
+        def _init(url):
+            flow._last_auth_landing_url = "https://auth.openai.com/create-account/password"
+            return "device-1"
+
+        flow.auth_oauth_init = _init
+        flow.get_sentinel_token = lambda device_id: self.fail(
+            "不该为一个根本不会发的 authorize/continue 算 PoW"
+        )
+        flow.phone_authorize_continue = lambda phone, sentinel: self.fail(
+            "login_hint 已经落到设密码页了，不该再提交一次身份"
+        )
+        registered = []
+
+        def _register(phone):
+            registered.append(phone)
+            return {"page": {"type": "phone_otp_verification"}}
+
+        flow.phone_register_user = _register
+        flow._phone_otp_validate = lambda code, referer="": {
+            "continue_url": "https://auth.openai.com/about-you"
+        }
+
+        continue_url, _auth_url = flow._do_phone_register_loop(ctrl)
+
+        self.assertEqual(registered, [ctrl.rented[0]])
+        self.assertEqual(continue_url, "https://auth.openai.com/about-you")
+
+    def test_other_landings_still_submit_the_identity(self):
+        """login_hint 没被服务端认下来时，authorize/continue 这一步不能省。"""
+        ctrl = _FakeController()
+        flow = _loop_flow()
+
+        def _init(url):
+            flow._last_auth_landing_url = "https://auth.openai.com/log-in"
+            return "device-1"
+
+        flow.auth_oauth_init = _init
+        submitted = []
+
+        def _continue(phone, sentinel):
+            submitted.append(phone)
+            return {"page": {"type": "create_account_password"}}
+
+        flow.phone_authorize_continue = _continue
+        flow.phone_register_user = lambda phone: {"page": {"type": "phone_otp_verification"}}
+        flow._phone_otp_validate = lambda code, referer="": {
+            "continue_url": "https://auth.openai.com/about-you"
+        }
+
+        flow._do_phone_register_loop(ctrl)
+
+        self.assertEqual(submitted, [ctrl.rented[0]])
+
     def test_happy_path_registers_then_validates_sms(self):
         ctrl = _FakeController()
         flow = _loop_flow()

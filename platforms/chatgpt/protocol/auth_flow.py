@@ -137,6 +137,12 @@ class AuthFlow(PhoneRegisterMixin):
         self._is_existing_account = False
         self._existing_email_verification_mode = ""
         self._existing_page_type = ""
+        # 手机号链路会在 login_hint 已经把身份定下来时跳过 authorize/continue，
+        # 那条路上没人给这两个字段赋过值，读到就是 AttributeError。
+        self._last_sentinel_token = ""
+        self._last_sentinel_so_token = ""
+        # auth_oauth_init 跟完 302 之后真正落在哪一页
+        self._last_auth_landing_url = ""
         self._oauth_client_id = "YOUR_OPENAI_WEB_CLIENT_ID"
         self._oauth_redirect_uri = "https://chatgpt.com/api/auth/callback/openai"
         self._oauth_scope = ""
@@ -1804,6 +1810,10 @@ class AuthFlow(PhoneRegisterMixin):
         headers.pop("sec-fetch-user", None)
         resp = self.session.get(auth_url, headers=headers, timeout=30, allow_redirects=True)
         self._trace_http("auth_oauth_init", resp)
+
+        # 带 login_hint 时服务端会直接把人放到对应的页面（手机号注册就是
+        # /create-account/password），落点决定了下一步还要不要提交身份。
+        self._last_auth_landing_url = str(getattr(resp, "url", "") or "")
 
         # 从 cookie 获取 oai-did
         device_id = ""
