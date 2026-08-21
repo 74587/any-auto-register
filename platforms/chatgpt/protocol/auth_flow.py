@@ -879,9 +879,6 @@ class AuthFlow(PhoneRegisterMixin):
         headers["Accept"] = "application/json"
         headers["Content-Type"] = "application/json"
         headers["Origin"] = "https://auth.openai.com"
-        device_id = (self.result.device_id or "").strip() or (self.session.cookies.get("oai-did", "") or "").strip()
-        if device_id:
-            headers["oai-device-id"] = device_id
         return headers
 
     def _add_phone_send(self, phone_number: str) -> dict:
@@ -1467,7 +1464,8 @@ class AuthFlow(PhoneRegisterMixin):
         关键点：
         - Origin 必须与 Referer 同源（尤其 auth.openai.com 的状态机接口），
           否则容易触发 invalid_state / 风控分支。
-        - 在 auth.openai.com 域下，尽量补充 oai-device-id，提升状态机连续性。
+        - auth.openai.com 侧不带 oai-device-id：抓包里浏览器在该域一次都没发过
+          这个头，设备标识走 oai-did cookie 和 sentinel body 里的 id。
         - 全请求注入 Datadog trace 头，避免 OTP silent-drop。
         """
         origin = "https://chatgpt.com"
@@ -1506,16 +1504,6 @@ class AuthFlow(PhoneRegisterMixin):
                 headers["sec-ch-ua-model"] = fp["sec_ch_ua_model"]
             if fp.get("sec_ch_ua_platform_version"):
                 headers["sec-ch-ua-platform-version"] = fp["sec_ch_ua_platform_version"]
-
-        # auth.openai.com 侧请求补设备标识（若可得）
-        try:
-            host = (urlparse(origin).netloc or "").lower()
-        except Exception:
-            host = ""
-        if "auth.openai.com" in host:
-            device_id = (self.result.device_id or "").strip() or (self.session.cookies.get("oai-did", "") or "").strip()
-            if device_id:
-                headers["oai-device-id"] = device_id
 
         headers.update(self._datadog_trace_headers())
         return headers
