@@ -5,11 +5,12 @@
 （create_account → workspace/select → callback → session → Codex）两条链完全
 一样，所以这里只实现前半段，后半段调 ``AuthFlow`` 已有的方法。
 
-浏览器实测下来，手机号这一段的接口顺序是：
+浏览器抓包下来，手机号这一段的接口顺序是：
 
     POST /api/accounts/user/register     {"username": "+56...", "password": "..."}
     （服务端要么直接把人放到 /contact-verification 并把短信发出去，要么先停在
       phone_otp_send，等客户端打一次 phone-otp/send 才发）
+    GET  /api/accounts/phone-otp/send    整页跳转（不是 XHR），302 到 /contact-verification
     POST /api/accounts/phone-otp/validate {"code": "869328"}   referer=/contact-verification
     POST /api/accounts/create_account     {"name": ..., "birthdate": ...}  referer=/about-you
 
@@ -218,13 +219,37 @@ class PhoneRegisterMixin:
         except Exception:
             return {}
 
+    def _phone_send_navigation_headers(self, referer: str) -> dict:
+        """GET phone-otp/send 那一枪的头：整页跳转，不是 XHR。
+
+        抓包里这一步是浏览器把地址栏换过去（Accept: text/html、
+        Sec-Fetch-Dest: document、Sec-Fetch-Mode: navigate、带
+        upgrade-insecure-requests，既没有 Origin 也没有 Content-Type），
+        服务端 302 回 /contact-verification 才算这一步走完。按 XHR 发过去
+        形状对不上，短信就发不出来。
+        """
+        headers = self._navigation_headers()
+        headers["Referer"] = referer
+        # auth.openai.com 站内跳转；302 跟随不是用户点击，不发 sec-fetch-user
+        headers["sec-fetch-site"] = "same-origin"
+        headers.pop("sec-fetch-user", None)
+        return headers
+
+    @staticmethod
+    def _landed_auth_page(resp) -> str:
+        """跟完 302 之后停在哪张页面上。"""
+        url = str(getattr(resp, "url", "") or "").split("?")[0].strip()
+        if url.startswith("https://auth.openai.com/") and "/api/" not in url:
+            return url
+        return ""
+
     def send_phone_otp(self, phone_number: str, continue_url: str = "") -> dict:
         """让 OpenAI 把验证码发到这个号上。
 
-        走哪个接口由服务端当前停在哪一步决定，``continue_url`` 就是它给的指引。
-        指引没命中时按可能性从高到低试：phone-otp/send（注册链）→ add-phone/send
-        （流程停在 /add-phone 页）。每一发都记下服务端的原话，全失败时一起抛出去，
-        免得只剩一句没有上下文的报错。
+        正路只有一条：按浏览器的样子整页跳到 phone-otp/send。两个 POST 是兜底，
+        只在导航版没成的时候才轮到它们（服务端换形状时至少还有条活路）。
+        ``continue_url`` 是服务端给的指引，指到哪个 send 就打哪个。
+        每一发都记下服务端的原话，全失败时一起抛出去，免得只剩一句没有上下文的报错。
 
         这里只负责把码发出去一次，之后就是纯等：resend 换不来第二条短信。
         """
@@ -235,26 +260,32 @@ class PhoneRegisterMixin:
         if hinted.startswith("https://auth.openai.com/api/accounts/") and hinted.endswith("/send"):
             send_url = hinted
 
-        payload = {"phone_number": phone_number, "channel": "sms"}
+        body = {"phone_number": phone_number, "channel": "sms"}
         candidates = [
             ("GET", send_url, None, "https://auth.openai.com/create-account/password"),
-            ("POST", send_url, payload, "https://auth.openai.com/create-account/password"),
+            ("POST", send_url, body, "https://auth.openai.com/create-account/password"),
             (
                 "POST",
                 "https://auth.openai.com/api/accounts/add-phone/send",
-                payload,
+                body,
                 "https://auth.openai.com/add-phone",
             ),
         ]
 
         failures = []
-        for method, url, body, referer in candidates:
-            headers = self._phone_headers(referer)
+        for method, url, payload, referer in candidates:
             try:
                 if method == "GET":
-                    resp = self.session.get(url, headers=headers, timeout=30)
+                    resp = self.session.get(
+                        url,
+                        headers=self._phone_send_navigation_headers(referer),
+                        timeout=30,
+                        allow_redirects=True,
+                    )
                 else:
-                    resp = self.session.post(url, headers=headers, json=body, timeout=30)
+                    resp = self.session.post(
+                        url, headers=self._phone_headers(referer), json=payload, timeout=30
+                    )
             except Exception as exc:
                 failures.append(f"{method} {url.rsplit('/', 2)[-2:]} 网络异常: {exc}")
                 continue
@@ -263,19 +294,29 @@ class PhoneRegisterMixin:
             if resp.status_code == 200:
                 raw = (resp.text or "").strip()
                 try:
-                    payload = resp.json() or {}
+                    result = resp.json() or {}
                 except Exception:
-                    payload = {}
+                    result = {}
+                if not isinstance(result, dict):
+                    result = {}
+                if not result:
+                    # 导航版回的是 /contact-verification 那张 HTML 页，没有 JSON，
+                    # 落点 URL 就是服务端给的下一步
+                    landed = self._landed_auth_page(resp)
+                    if landed:
+                        result = {"continue_url": landed}
                 # HTTP 200 只代表服务端受理了这一步，真正指示下一步的是 page/continue；
                 # 整段 JSON 留给 AUTH_HTTP_TRACE，别刷进任务日志。
                 logger.info(
                     "[手机注册] 发码请求已被受理: %s %s → HTTP 200 %s",
                     method,
                     url,
-                    describe_page(payload) or "(无 page 信息)",
+                    describe_page(result) or "(无 page 信息)",
                 )
-                self._warn_if_not_sms_channel(raw)
-                return payload
+                # HTML 落地页里的 whatsapp/voice 是页面上的其它选项，不是本次通道
+                if raw.startswith("{"):
+                    self._warn_if_not_sms_channel(raw)
+                return result
 
             detail = describe_error(resp.text)
             failures.append(f"{method} {url} → HTTP {resp.status_code} {detail}")
