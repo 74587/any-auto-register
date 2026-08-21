@@ -146,7 +146,20 @@ The same two places also let you pick which identity registration uses. It combi
 
 Both phone methods need SMS receiving enabled with an API key under **Settings → 手机接码 (Phone SMS)**, otherwise the task fails immediately. The binding step is only accepted while OpenAI keeps add-email in the current authorize flow; when it is rejected the account is still kept and the reason is stored in the account details, so it can be bound later.
 
-### 4. Phone Verification (add-phone)
+### 4. TOTP 2FA Binding
+
+The register task page and the ChatGPT register dialog also carry a **绑定 2FA (Bind 2FA)** switch, **off by default**. With it on, a freshly registered account gets a TOTP second factor bound right away:
+
+- **Fast path**: reuses the registration session to request and activate the secret. The chain finished its verification seconds earlier, so the server still treats it as recently authenticated — no re-login, no extra email, done in seconds.
+- **Slow path**: only runs when the fast path fails. It replays the full login chain with email + password before enrolling, which costs one more PoW and usually one more emailed code. Phone-identity accounts have no email to log in with, so they skip it.
+
+The secret lands in the account's `extra` under `totp_secret`. The account details panel offers it for copying into an authenticator app, and it is printed once in the task log. Bound accounts carry a **2FA 已绑** tag in the list.
+
+Existing accounts can be bound one at a time from the account action menu (**绑定 2FA**), which likewise tries session reuse first and falls back to a re-login.
+
+> ⚠️ The server hands out the secret exactly once and no endpoint can retrieve it again. Binding takes effect immediately: every later login for that account needs a rotating code. RT backfill and re-login flows compute it automatically from the stored secret, but losing the secret locks you out of the account for good.
+
+### 5. Phone Verification (add-phone)
 
 OpenAI asks some registrations to bind a phone number. When add-phone is hit, the system rents a number, waits for the SMS, and submits the code without any manual step. Configure it under **Settings → 手机接码 (Phone SMS)**:
 
@@ -167,7 +180,7 @@ OpenAI asks some registrations to bind a phone number. When add-phone is hit, th
 
 Country ID, per-number timeout, and max number swaps can additionally be overridden per task on the registration task page. The provider and API key are maintained only in the global settings.
 
-### 5. ChatGPT Batch Status Sync & Re-upload
+### 6. ChatGPT Batch Status Sync & Re-upload
 
 At the top of the ChatGPT platform list, there are two types of batch capabilities:
 

@@ -273,6 +273,58 @@ class RegistrationEngineTwoFactorTests(unittest.TestCase):
         slow.assert_not_called()
 
 
+class PluginActionTests(unittest.TestCase):
+    def _account(self, extra=None):
+        from core.base_platform import Account, AccountStatus
+
+        return Account(
+            platform="chatgpt",
+            email="demo@example.com",
+            password="pw",
+            token="at-1",
+            status=AccountStatus.REGISTERED,
+            extra=dict(extra or {}),
+        )
+
+    def test_bind_2fa_action_returns_the_secret_and_a_persistable_patch(self):
+        from platforms.chatgpt.plugin import ChatGPTPlatform
+        from platforms.chatgpt.protocol.two_factor import TwoFactorBindResult
+
+        with mock.patch.object(
+            chatgpt_two_factor,
+            "bind_account_two_factor",
+            return_value=TwoFactorBindResult(ok=True, secret=SECRET),
+        ) as bind:
+            result = ChatGPTPlatform().execute_action("bind_2fa", self._account(), {})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["totp_secret"], SECRET)
+        self.assertEqual(result["account_extra_patch"]["totp_secret"], SECRET)
+        self.assertEqual(bind.call_args.kwargs["email"], "demo@example.com")
+        self.assertTrue(bind.call_args.kwargs["allow_login"])
+
+    def test_bind_2fa_action_reports_failure_without_touching_the_secret(self):
+        from platforms.chatgpt.plugin import ChatGPTPlatform
+        from platforms.chatgpt.protocol.two_factor import TwoFactorBindResult
+
+        with mock.patch.object(
+            chatgpt_two_factor,
+            "bind_account_two_factor",
+            return_value=TwoFactorBindResult(error_message="enroll 403"),
+        ):
+            result = ChatGPTPlatform().execute_action("bind_2fa", self._account(), {})
+
+        self.assertFalse(result["ok"])
+        self.assertIn("enroll 403", result["error"])
+        self.assertNotIn("totp_secret", result["account_extra_patch"])
+
+    def test_bind_2fa_action_is_offered_on_the_accounts_page(self):
+        from platforms.chatgpt.plugin import ChatGPTPlatform
+
+        actions = {item["id"]: item["label"] for item in ChatGPTPlatform().get_platform_actions()}
+        self.assertEqual(actions["bind_2fa"], "绑定 2FA")
+
+
 class AccountBindServiceTests(unittest.TestCase):
     def test_existing_secret_is_never_overwritten(self):
         result = chatgpt_two_factor.bind_account_two_factor(

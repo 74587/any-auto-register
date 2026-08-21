@@ -146,7 +146,20 @@ Cũng tại hai nơi đó, bạn có thể chọn danh tính dùng để đăng 
 
 Hai phương thức dùng số điện thoại đều cần bật nhận mã và điền API Key tại **Cài đặt → 手机接码 (Nhận mã SMS)**, nếu không tác vụ sẽ báo lỗi ngay. Bước liên kết email chỉ được chấp nhận khi OpenAI còn giữ add-email trong luồng authorize hiện tại; nếu bị từ chối thì tài khoản vẫn được giữ lại và lý do được ghi trong chi tiết tài khoản để liên kết sau.
 
-### 4. Nhận mã SMS (add-phone)
+### 4. Liên kết 2FA TOTP
+
+Trang tác vụ đăng ký và hộp thoại đăng ký ChatGPT còn có công tắc **绑定 2FA (Liên kết 2FA)**, **mặc định tắt**. Khi bật, tài khoản vừa đăng ký thành công sẽ được liên kết ngay một yếu tố thứ hai dạng TOTP:
+
+- **Đường nhanh**: dùng lại chính phiên đăng ký để xin và kích hoạt khóa bí mật. Chuỗi đăng ký vừa xác minh xong vài chục giây trước nên máy chủ vẫn xem là "vừa xác thực" — không cần đăng nhập lại, không cần thêm email, xong trong vài giây.
+- **Đường chậm**: chỉ chạy khi đường nhanh thất bại. Nó chạy lại toàn bộ chuỗi đăng nhập bằng email + mật khẩu rồi mới liên kết, tốn thêm một lần PoW và thường thêm một mã gửi qua email. Tài khoản dùng danh tính số điện thoại không có email để đăng nhập nên sẽ bỏ qua bước này.
+
+Khóa bí mật được ghi vào `totp_secret` trong `extra` của tài khoản. Chi tiết tài khoản cho phép sao chép để nhập vào app xác thực, và khóa cũng được in một lần trong nhật ký tác vụ. Tài khoản đã liên kết mang nhãn **2FA 已绑** trong danh sách.
+
+Tài khoản cũ trong kho có thể liên kết riêng từ menu thao tác tài khoản (**绑定 2FA**), cũng thử dùng lại phiên trước rồi mới đăng nhập lại.
+
+> ⚠️ Máy chủ chỉ phát khóa bí mật đúng một lần và không API nào lấy lại được. Liên kết có hiệu lực ngay: mọi lần đăng nhập sau đó của tài khoản đều cần mã động. Các luồng bù RT và đăng nhập lại tự tính mã từ khóa đã lưu, nhưng mất khóa là mất luôn tài khoản.
+
+### 5. Nhận mã SMS (add-phone)
 
 OpenAI yêu cầu một số lượt đăng ký phải liên kết số điện thoại. Khi gặp add-phone, hệ thống tự thuê số, chờ SMS và gửi mã xác minh mà không cần thao tác thủ công. Cấu hình tại **Cài đặt → 手机接码 (Nhận mã SMS)**:
 
@@ -167,7 +180,7 @@ OpenAI yêu cầu một số lượt đăng ký phải liên kết số điện 
 
 ID quốc gia, số giây chờ mỗi số và số lần đổi số tối đa còn có thể ghi đè theo từng tác vụ ở trang tác vụ đăng ký. Nền tảng và API Key chỉ được quản lý trong cấu hình toàn cục.
 
-### 5. Đồng bộ trạng thái hàng loạt & re-upload cho ChatGPT
+### 6. Đồng bộ trạng thái hàng loạt & re-upload cho ChatGPT
 
 Ở đầu trang danh sách ChatGPT, hiện có hai loại chức năng hàng loạt:
 
