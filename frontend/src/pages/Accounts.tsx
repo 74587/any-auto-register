@@ -639,7 +639,6 @@ export default function Accounts() {
   const [importLoading, setImportLoading] = useState(false)
   const [taskId, setTaskId] = useState<string | null>(null)
   const [registerLoading, setRegisterLoading] = useState(false)
-  const [cpaSyncLoading, setCpaSyncLoading] = useState<'pending' | 'selected' | ''>('')
   const [cpaUploadLoading, setCpaUploadLoading] = useState<'all' | 'selected' | ''>('')
   const [statusSyncLoading, setStatusSyncLoading] = useState<
     'probe_selected' | 'probe_all' | 'remote_selected' | 'remote_all' | 'plus_selected' | 'plus_all' | ''
@@ -892,46 +891,6 @@ export default function Accounts() {
     load()
   }
 
-  const showCpaSyncResult = (title: string, result: any) => {
-    const lines = (result.items || [])
-      .flatMap((item: any) =>
-        (item.results || []).map((syncResult: any) => ({
-          email: item.email,
-          platform: item.platform,
-          ok: Boolean(syncResult.ok),
-          name: syncResult.name || 'CPA',
-          msg: syncResult.msg || '',
-        })),
-      )
-      .filter((item: any) => !item.ok)
-      .map((item: any) => `[${item.platform}] ${item.email || '-'} / ${item.name}: ${item.msg || '失败'}`)
-
-    if (lines.length === 0) return
-
-    Modal.info({
-      title,
-      width: 760,
-      content: (
-        <pre
-          style={{
-            margin: 0,
-            maxHeight: 360,
-            overflow: 'auto',
-            padding: 12,
-            borderRadius: 8,
-            background: 'var(--bg-subtle)',
-            fontSize: 12,
-            lineHeight: 1.5,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {lines.join('\n')}
-        </pre>
-      ),
-    })
-  }
-
   const showBatchActionResult = (title: string, result: any) => {
     const lines = (result.items || [])
       .filter((item: any) => !item.ok)
@@ -961,59 +920,6 @@ export default function Accounts() {
         </pre>
       ),
     })
-  }
-
-  const handleCpaBackfill = async (mode: 'pending' | 'selected') => {
-    if (currentPlatform !== 'chatgpt') return
-
-    const body: Record<string, unknown> = {
-      platforms: ['chatgpt'],
-    }
-
-    if (mode === 'selected') {
-      const accountIds = Array.from(selectedRowKeys)
-        .map((value) => Number(value))
-        .filter((value) => Number.isInteger(value) && value > 0)
-
-      if (accountIds.length === 0) {
-        message.warning('请先选择要上传的账号')
-        return
-      }
-      body.account_ids = accountIds
-    } else {
-      body.pending_only = true
-      if (filterStatus) body.status = filterStatus
-      if (filterPlusStatus) body.plus_status = filterPlusStatus
-      if (search) body.email = search
-    }
-
-    setCpaSyncLoading(mode)
-    try {
-      const result = await apiFetch('/integrations/backfill', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      })
-
-      const actionLabel = mode === 'selected' ? '所选账号远端补传' : '远端未发现账号补传'
-      if (!result.total) {
-        message.info('没有可处理的账号')
-      } else if (!result.failed && !result.skipped) {
-        message.success(`${actionLabel}完成：成功 ${result.success} / ${result.total}`)
-      } else if (!result.failed) {
-        message.success(`${actionLabel}完成：成功 ${result.success}，跳过 ${result.skipped} / ${result.total}`)
-      } else if (!result.success) {
-        message.error(`${actionLabel}失败：成功 ${result.success}，跳过 ${result.skipped} / ${result.total}`)
-      } else {
-        message.warning(`${actionLabel}部分完成：成功 ${result.success}，跳过 ${result.skipped} / ${result.total}`)
-      }
-
-      showCpaSyncResult(`${actionLabel}结果`, result)
-      await load()
-    } catch (e: any) {
-      message.error(`CPA 上传失败: ${e.message}`)
-    } finally {
-      setCpaSyncLoading('')
-    }
   }
 
   const handleBatchStatusSync = async (kind: 'probe' | 'remote' | 'plus', scope: 'selected' | 'all') => {
@@ -1174,15 +1080,7 @@ export default function Accounts() {
 
   const getStatusSyncScope = (): 'selected' | 'all' => (selectedRowKeys.length > 0 ? 'selected' : 'all')
 
-  const getBackfillScope = (): 'selected' | 'pending' => (selectedRowKeys.length > 0 ? 'selected' : 'pending')
-
   const getUploadCpaScope = (): 'selected' | 'all' => (selectedRowKeys.length > 0 ? 'selected' : 'all')
-
-  const backfillButtonLabel = () => {
-    const scope = getBackfillScope()
-    const count = scope === 'selected' ? selectedRowKeys.length : total
-    return scope === 'selected' ? `补传所选远端未发现 (${count})` : `补传远端未发现 (${count})`
-  }
 
   const uploadCpaButtonLabel = () => {
     const scope = getUploadCpaScope()
@@ -1206,13 +1104,21 @@ export default function Accounts() {
     gap: 6,
     minWidth: 0,
   }
+  // 复制按钮紧跟在截断后的密文右边，别被超长 token 顶到列的最右侧。
+  const secretCellStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+  }
   const secretPreviewStyle: React.CSSProperties = {
     ...monospaceStyle,
+    flex: 1,
+    minWidth: 0,
     filter: 'blur(4px)',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
-    maxWidth: '100%',
     opacity: 0.9,
   }
   const compactPanelStyle: React.CSSProperties = {
@@ -1251,28 +1157,28 @@ export default function Accounts() {
       key: 'password',
       width: 150,
       render: (text: string) => (
-        <Space size={6} style={{ width: '100%', justifyContent: 'space-between' }}>
-          <Text style={{ ...secretPreviewStyle, maxWidth: 90 }} title={text}>
+        <div style={secretCellStyle}>
+          <Text style={secretPreviewStyle} title={text}>
             {text}
           </Text>
           <Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copyText(text)} />
-        </Space>
+        </div>
       ),
     },
     {
       title: 'RT',
       key: 'refresh_token',
-      width: 120,
+      width: 150,
       render: (_: any, record: any) => {
         const rt = getRefreshToken(record)
         if (!rt) return <span style={{ color: 'var(--text-muted)' }}>-</span>
         return (
-          <Space size={6} style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Text style={{ ...secretPreviewStyle, fontSize: 11, maxWidth: 58 }} title={rt}>
+          <div style={secretCellStyle}>
+            <Text style={{ ...secretPreviewStyle, fontSize: 11 }} title={rt}>
               {rt}
             </Text>
             <Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copyText(rt)} />
-          </Space>
+          </div>
         )
       },
     },
@@ -1340,21 +1246,6 @@ export default function Accounts() {
                   {checkedAt}
                 </Text>
               )}
-            </div>
-          )
-        },
-      },
-      {
-        title: 'CLIProxyAPI',
-        key: 'cliproxy_sync',
-        width: 170,
-        render: (_: any, record: any) => {
-          const sync = record.cliproxySync || {}
-          const meta = cliproxyStateMeta(sync)
-
-          return (
-            <div style={{ ...cellStackStyle, ...compactPanelStyle }}>
-              <Tag color={meta.color}>{meta.label}</Tag>
             </div>
           )
         },
@@ -1555,26 +1446,6 @@ export default function Accounts() {
               {selectedRowKeys.length > 0 ? `补 RT (${selectedRowKeys.length})` : '补 RT'}
             </Button>
           )}
-          {currentPlatform === 'chatgpt' && (
-            <Popconfirm
-              title={
-                getBackfillScope() === 'selected'
-                  ? `确认补传所选 ${selectedRowKeys.length} 个账号中远端未发现的 auth-file？`
-                  : '确认补传当前筛选范围内远端未发现且本地状态有效的账号？'
-              }
-              onConfirm={() => handleCpaBackfill(getBackfillScope())}
-              okText="确认"
-              cancelText="取消"
-            >
-              <Button
-                loading={cpaSyncLoading === 'pending' || cpaSyncLoading === 'selected'}
-                icon={<UploadOutlined />}
-                disabled={getBackfillScope() === 'selected' ? selectedRowKeys.length === 0 : total === 0}
-              >
-                {backfillButtonLabel()}
-              </Button>
-            </Popconfirm>
-          )}
           {currentPlatform !== 'chatgpt' && hasUploadCpaAction && (
             <Popconfirm
               title={
@@ -1625,7 +1496,7 @@ export default function Accounts() {
           onChange: setSelectedRowKeys,
         }}
         pagination={{ total, current: page, pageSize, showSizeChanger: true, pageSizeOptions: ['20', '50', '100'], onChange: (p, ps) => { setPage(p); setPageSize(ps) } }}
-        scroll={{ x: isChatgptPlatform ? 1440 : 980 }}
+        scroll={{ x: isChatgptPlatform ? 1300 : 980 }}
         onRow={(record) => ({
           onDoubleClick: () => {
             setCurrentAccount(record)
