@@ -27,6 +27,7 @@ import {
   CloudOutlined,
   DeleteOutlined,
   InboxOutlined,
+  LinkOutlined,
   LoginOutlined,
   PaperClipOutlined,
   PlusOutlined,
@@ -54,6 +55,7 @@ import {
   DEFAULT_ICLOUD_IMAP_PORT,
   ICLOUD_HOURLY_ALIAS_LIMIT,
   ICLOUD_REGION_OPTIONS,
+  aliasMailUrl,
   formatDateTime,
   formatRelativeTime,
   getICloudRegionLabel,
@@ -218,7 +220,39 @@ export default function ICloudPage() {
     {
       title: '隐私邮箱',
       dataIndex: 'address',
+      width: 260,
       render: (address: string) => <Text copyable>{address}</Text>,
+    },
+    {
+      title: '邮件 URL',
+      width: 280,
+      render: (_: unknown, alias: ICloudAlias) => {
+        const url = aliasMailUrl(alias.share_token)
+        if (!url) return <Text type="secondary">-</Text>
+        return (
+          <Space size={4} style={{ maxWidth: '100%' }}>
+            <Tooltip title="免登录打开，只显示最新一封邮件">
+              <Typography.Link
+                href={url}
+                target="_blank"
+                rel="noreferrer"
+                ellipsis
+                style={{ fontSize: 12, maxWidth: 210 }}
+              >
+                {url}
+              </Typography.Link>
+            </Tooltip>
+            <Text
+              type="secondary"
+              copyable={{
+                text: url,
+                icon: [<LinkOutlined key="copy" />, <LinkOutlined key="copied" />],
+                tooltips: ['复制链接', '链接已复制'],
+              }}
+            />
+          </Space>
+        )
+      },
     },
     { title: '标签', dataIndex: 'label', width: 160, render: (value: string) => value || '-' },
     { title: '所属主号', dataIndex: 'account_email', width: 220 },
@@ -333,6 +367,8 @@ export default function ICloudPage() {
                   loading={loading}
                   columns={aliasColumns}
                   dataSource={aliases}
+                  // 列多了之后窄屏会把邮箱地址挤成三行，宁可横向滚动
+                  scroll={{ x: 1380 }}
                   pagination={{ pageSize: 20, showSizeChanger: false }}
                   locale={{
                     emptyText: (

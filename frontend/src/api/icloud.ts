@@ -43,6 +43,8 @@ export interface ICloudAlias {
   note: string
   status: string
   provider_id: string
+  /** 免登录查看最新邮件的凭证，为空说明是后端补 token 之前的旧数据 */
+  share_token: string
   created_at: string | null
 }
 
@@ -189,9 +191,13 @@ export function deleteICloudAlias(id: number, remote = true): Promise<{ ok: bool
   return apiFetch(`/icloud/aliases/${id}?remote=${remote}`, { method: 'DELETE' })
 }
 
+/**
+ * limit 是主号收件箱的倒序扫描窗口，不是"返回几封"——主号收件箱里混着所有
+ * 隐私邮箱的信，窗口开太窄会把这个地址的最新一封漏在窗口外，所以取服务端默认的 50。
+ */
 export async function listICloudAliasMessages(
   aliasId: number,
-  limit = 20,
+  limit = 50,
 ): Promise<ICloudMessage[]> {
   const data = await apiFetch(`/icloud/aliases/${aliasId}/messages?limit=${limit}`)
   return data?.items ?? []
