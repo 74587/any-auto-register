@@ -214,7 +214,12 @@ class ChatGPTRegistrationEngine:
         enroll 就行，不用重跑登录链、不用再收一封邮件。
         """
         self.log("绑定 2FA：复用注册会话直接申请 TOTP 密钥…")
-        self._record_two_factor(bind_totp_inline(flow, access_token))
+        result = bind_totp_inline(flow, access_token)
+        # enroll 内部已经写过一次，这里再兜一道：密钥丢了这个号的 2FA 就永久锁死，
+        # 不值得赌它一定被写进去了
+        if result.secret:
+            flow.result.totp_secret = result.secret
+        self._record_two_factor(result)
 
     def _ensure_two_factor(self, flow: AuthFlow, mail_provider: Optional[MailboxProviderAdapter]) -> None:
         """快路径没绑上时回落到重新登录再绑。
@@ -347,4 +352,6 @@ class ChatGPTRegistrationEngine:
         salvaged = RegistrationResult.from_auth_result(result)
         salvaged.metadata["partial"] = partial
         salvaged.metadata["last_error"] = str(exc)
-        return salvaged
+        # 炸在 2FA 绑定之后是常态（Codex 换 RT 那步最容易出事），绑定结论得跟着号走，
+        # 否则账号页会把一个已经绑好的号显示成没绑过
+        return self._attach_two_factor(salvaged)

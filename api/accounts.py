@@ -3,6 +3,12 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select, func
 from pydantic import BaseModel
 from core.db import AccountModel, get_session
+from services.account_export import (
+    DEFAULT_EXPORT_FORMAT,
+    export_filename,
+    list_export_formats,
+    render_accounts,
+)
 from services.chatgpt_account_state import filter_accounts_by_plus_status
 from typing import Optional
 from datetime import datetime, timezone
@@ -37,6 +43,46 @@ class BatchDeleteRequest(BaseModel):
     ids: list[int]
 
 
+class ExportTextRequest(BaseModel):
+    """按格式导出：给了 ``account_ids`` 就只导这些，否则导当前筛选的全部。"""
+
+    format: str = DEFAULT_EXPORT_FORMAT
+    platform: str = ""
+    account_ids: list[int] = []
+    status: str = ""
+    email: str = ""
+    plus_status: str = ""
+    created_at_start: Optional[datetime] = None
+    created_at_end: Optional[datetime] = None
+
+
+def _filtered_accounts(
+    session: Session,
+    *,
+    platform: str = "",
+    status: str = "",
+    email: str = "",
+    plus_status: str = "",
+    created_at_start: Optional[datetime] = None,
+    created_at_end: Optional[datetime] = None,
+) -> list[AccountModel]:
+    q = select(AccountModel)
+    if platform:
+        q = q.where(AccountModel.platform == platform)
+    if status:
+        q = q.where(AccountModel.status == status)
+    if email:
+        q = q.where(AccountModel.email.contains(email))
+    if created_at_start:
+        q = q.where(AccountModel.created_at >= created_at_start)
+    if created_at_end:
+        q = q.where(AccountModel.created_at <= created_at_end)
+    rows = list(session.exec(q).all())
+    if plus_status:
+        rows = list(filter_accounts_by_plus_status(rows, plus_status))
+    return rows
+
+
 @router.get("")
 def list_accounts(
     platform: Optional[str] = None,
@@ -49,22 +95,17 @@ def list_accounts(
     page_size: int = 20,
     session: Session = Depends(get_session),
 ):
-    q = select(AccountModel)
-    if platform:
-        q = q.where(AccountModel.platform == platform)
-    if status:
-        q = q.where(AccountModel.status == status)
-    if email:
-        q = q.where(AccountModel.email.contains(email))
-    if created_at_start:
-        q = q.where(AccountModel.created_at >= created_at_start)
-    if created_at_end:
-        q = q.where(AccountModel.created_at <= created_at_end)
-    rows = session.exec(q).all()
     # Plus 试用状态存在 extra_json 里，SQL 筛不动，只能取出来再过一遍。
     # 反正这个接口本来就要把整个结果集读出来算 total。
-    if plus_status:
-        rows = filter_accounts_by_plus_status(rows, plus_status)
+    rows = _filtered_accounts(
+        session,
+        platform=platform or "",
+        status=status or "",
+        email=email or "",
+        plus_status=plus_status or "",
+        created_at_start=created_at_start,
+        created_at_end=created_at_end,
+    )
     total = len(rows)
     start = max(page - 1, 0) * page_size
     return {"total": total, "page": page, "items": rows[start : start + page_size]}
@@ -125,6 +166,45 @@ def export_accounts(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=accounts.csv"}
     )
+
+
+@router.get("/export-formats")
+def get_export_formats():
+    """导出格式清单。前端下拉框直接渲染这个列表，新增格式不用改前端。"""
+    return {"formats": list_export_formats(), "default": DEFAULT_EXPORT_FORMAT}
+
+
+@router.post("/export-text")
+def export_accounts_text(body: ExportTextRequest, session: Session = Depends(get_session)):
+    if body.account_ids:
+        ids = [int(v) for v in body.account_ids if int(v) > 0]
+        rows = list(session.exec(select(AccountModel).where(AccountModel.id.in_(ids))).all())
+        # 按前端给的顺序回填，勾选顺序就是导出顺序
+        row_map = {row.id: row for row in rows}
+        accounts = [row_map[i] for i in dict.fromkeys(ids) if i in row_map]
+    else:
+        accounts = _filtered_accounts(
+            session,
+            platform=body.platform,
+            status=body.status,
+            email=body.email,
+            plus_status=body.plus_status,
+            created_at_start=body.created_at_start,
+            created_at_end=body.created_at_end,
+        )
+
+    try:
+        content = render_accounts(accounts, body.format)
+    except KeyError:
+        raise HTTPException(400, f"未知的导出格式: {body.format}")
+
+    return {
+        "format": body.format,
+        "total": len(accounts),
+        "lines": len([line for line in content.split("\n") if line]) if content else 0,
+        "content": content,
+        "filename": export_filename(body.platform, body.format),
+    }
 
 
 @router.post("/import")
