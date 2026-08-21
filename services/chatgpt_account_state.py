@@ -25,6 +25,52 @@ def is_account_deactivated_message(error_code: Any = "", message: Any = "") -> b
     return any(marker in text for marker in markers)
 
 
+# 401/403 的响应体里 OpenAI 说封号的措辞不止一种，全部小写后按子串匹配。
+# 比 is_account_deactivated_message 宽：那个只认"已删除/已停用"，这里连
+# 违规、滥用、封禁一起认，用在"凭证被吊销到底是过期还是封号"这种场合。
+_BANNED_BODY_MARKERS = (
+    "account_deactivated",
+    "accountdeactivated",
+    "deactivated",
+    "disabled",
+    "suspended",
+    "banned",
+    "violat",
+    "potential abuse",
+    "terminated",
+)
+
+
+def looks_like_banned_response(body_text: Any) -> bool:
+    """凭证被拒的响应体读起来像不像封号。"""
+    text = _lower_text(body_text)
+    return any(marker in text for marker in _BANNED_BODY_MARKERS)
+
+
+PLUS_STATUS_UNCHECKED = "unchecked"
+
+
+def account_plus_status(account: Any) -> str:
+    """账号上记录的 Plus 试用结论，没查过算 unchecked。"""
+    extra: Any = {}
+    getter = getattr(account, "get_extra", None)
+    if callable(getter):
+        extra = getter() or {}
+    else:
+        extra = getattr(account, "extra", {}) or {}
+    check = extra.get("plus_check") if isinstance(extra, dict) else None
+    if not isinstance(check, dict):
+        return PLUS_STATUS_UNCHECKED
+    return _lower_text(check.get("status")) or PLUS_STATUS_UNCHECKED
+
+
+def filter_accounts_by_plus_status(accounts: Any, plus_status: Any) -> list:
+    wanted = _lower_text(plus_status)
+    if not wanted:
+        return list(accounts)
+    return [account for account in accounts if account_plus_status(account) == wanted]
+
+
 def classify_local_probe_state(probe: dict[str, Any] | None) -> str:
     if not isinstance(probe, dict):
         return ""

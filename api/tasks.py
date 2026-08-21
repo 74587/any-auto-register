@@ -56,6 +56,7 @@ class BackfillRtTaskRequest(BaseModel):
     all_filtered: bool = False
     email: str = ""
     status: str = ""
+    plus_status: str = ""
     only_missing_rt: bool = True
     allow_login: bool = True
     concurrency: int = 1
@@ -856,6 +857,7 @@ def create_backfill_rt_task(req: BackfillRtTaskRequest, background_tasks: Backgr
                 all_filtered=req.all_filtered,
                 email=req.email,
                 status=req.status,
+                plus_status=req.plus_status,
                 only_missing_rt=req.only_missing_rt,
             )
         except ValueError as exc:

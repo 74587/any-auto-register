@@ -8,7 +8,10 @@ from core.db import AccountModel, get_session
 from core.registry import get
 from core.base_platform import RegisterConfig
 from core.config_store import config_store
-from services.chatgpt_account_state import apply_chatgpt_status_policy
+from services.chatgpt_account_state import (
+    apply_chatgpt_status_policy,
+    filter_accounts_by_plus_status,
+)
 from services.chatgpt_sync import update_account_model_cliproxy_sync
 
 router = APIRouter(prefix="/actions", tags=["actions"])
@@ -23,6 +26,7 @@ class BatchActionRequest(BaseModel):
     all_filtered: bool = False
     email: str = ""
     status: str = ""
+    plus_status: str = ""
     params: dict = {}
 
 
@@ -177,6 +181,8 @@ def _resolve_batch_accounts(platform: str, body: BatchActionRequest, session: Se
         query = query.where(AccountModel.email.contains(body.email))
 
     rows = session.exec(query).all()
+    if body.plus_status:
+        rows = filter_accounts_by_plus_status(rows, body.plus_status)
     if len(rows) > 1000:
         raise HTTPException(400, "单次最多处理 1000 个账号")
     return rows, []

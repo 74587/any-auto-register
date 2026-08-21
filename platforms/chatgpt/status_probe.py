@@ -4,16 +4,47 @@ from __future__ import annotations
 
 import base64
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from curl_cffi import requests as cffi_requests
-from services.chatgpt_account_state import is_account_deactivated_message
+from services.chatgpt_account_state import (
+    is_account_deactivated_message,
+    looks_like_banned_response,
+)
 
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CHATGPT_ME_URL = "https://chatgpt.com/backend-api/me"
+CHATGPT_ACCOUNTS_CHECK_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
 CODEX_USER_AGENT = "codex_cli_rs/0.116.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
+# accounts/check 是网页端自己调的接口，用 Codex CLI 的 UA 去打属于明显的非浏览器特征
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+)
+
+# 首月免费的促销活动 id。账号还能领时它会出现在 eligible_promo_campaigns.plus 里，
+# 领过或不符合条件就没有——这是判断"这个号还能不能白嫖一个月 Plus"的唯一依据。
+PLUS_TRIAL_PROMO_ID = "plus-1-month-free"
+
+PLUS_TRIAL_LABELS = {
+    "trial_eligible": "可领首月免费",
+    "plus_active": "Plus 生效中",
+    "free": "Free",
+    "banned": "封号",
+    "token_invalid": "凭证失效",
+    "no_access_token": "无 AT",
+    "error": "检测失败",
+}
+
+# 这几个不是"检测结论"而是"没检测成"，不该写进账号里冒充结果：
+# 写了之后账号就从"未检测"里消失，看着像已经查过。
+PLUS_TRIAL_INCONCLUSIVE = {"no_access_token", "error"}
+
+# 有这些套餐就说明已经在付费/订阅里，不用再问能不能领试用
+_SUBSCRIBED_PLANS = {"plus", "pro", "team", "enterprise"}
 
 
 def _utcnow_iso() -> str:
@@ -200,6 +231,158 @@ def _probe_codex_usage(access_token: str, account_id: str, proxy: Optional[str])
     if account_id:
         headers["Chatgpt-Account-Id"] = account_id
     return _perform_get(CODEX_USAGE_URL, headers=headers, proxy=proxy)
+
+
+def _extract_oai_device_id(account: Any) -> str:
+    """优先用账号自己的 oai-did，没有就按邮箱派生一个固定值。
+
+    同一个号每次检测都是同一个 device，比每次随机更像正常客户端。
+    """
+    extra = getattr(account, "extra", {}) or {}
+    cookies = str(extra.get("cookies") or getattr(account, "cookies", "") or "")
+    for part in cookies.split(";"):
+        part = part.strip()
+        if part.startswith("oai-did="):
+            value = part[len("oai-did=") :].strip()
+            if value:
+                return value
+    email = str(getattr(account, "email", "") or "").strip().lower()
+    if not email:
+        return ""
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"chatgpt-plus-check:{email}"))
+
+
+def _probe_accounts_check(
+    access_token: str, account_id: str, device_id: str, proxy: Optional[str]
+) -> ProbeHTTPResult:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "User-Agent": BROWSER_USER_AGENT,
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/",
+    }
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+    if device_id:
+        headers["OAI-Device-Id"] = device_id
+    return _perform_get(CHATGPT_ACCOUNTS_CHECK_URL, headers=headers, proxy=proxy)
+
+
+def _pick_account_entry(accounts: Any) -> dict[str, Any]:
+    if not isinstance(accounts, dict) or not accounts:
+        return {}
+    entry = accounts.get("default")
+    if isinstance(entry, dict):
+        return entry
+    for value in accounts.values():
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def classify_plus_trial(result: ProbeHTTPResult) -> dict[str, Any]:
+    """把 accounts/check 的响应翻译成试用资格结论。
+
+    401/403 一定要读响应体：账号被封时 access_token 会一起被吊销，请求在这里就
+    被拒了，走不到 200 分支里的 is_deactivated 判据。未过期却失效 = 被吊销，
+    而 OpenAI 会在响应体里写明原因，所以按措辞区分"封号"和"单纯的凭证失效"。
+    """
+    verdict: dict[str, Any] = {
+        "status": "error",
+        "plan": "",
+        "promo_id": "",
+        "http_status": result.status_code,
+        "message": result.message,
+    }
+
+    if result.status_code in (401, 403):
+        if looks_like_banned_response(result.body_text) or is_account_deactivated_message(
+            result.error_code, result.message
+        ):
+            verdict["status"] = "banned"
+        elif result.status_code == 401:
+            verdict["status"] = "token_invalid"
+        return verdict
+
+    if result.status_code != 200:
+        return verdict
+
+    entry = _pick_account_entry(result.body_json.get("accounts"))
+    if not entry:
+        verdict["message"] = "响应里没有账户数据"
+        return verdict
+
+    account_info = entry.get("account") if isinstance(entry.get("account"), dict) else {}
+    entitlement = entry.get("entitlement") if isinstance(entry.get("entitlement"), dict) else {}
+    promos = (
+        entry.get("eligible_promo_campaigns")
+        if isinstance(entry.get("eligible_promo_campaigns"), dict)
+        else {}
+    )
+
+    plan = _normalize_plan_type(str(account_info.get("plan_type") or ""), "")
+    verdict["plan"] = plan
+    verdict["message"] = ""
+
+    if account_info.get("is_deactivated"):
+        verdict["status"] = "banned"
+        return verdict
+
+    plus_promo = promos.get("plus") if isinstance(promos.get("plus"), dict) else {}
+    promo_id = str(plus_promo.get("id") or "").strip()
+    verdict["promo_id"] = promo_id
+
+    if plan in _SUBSCRIBED_PLANS or entitlement.get("has_active_subscription"):
+        verdict["status"] = "plus_active"
+    elif promo_id == PLUS_TRIAL_PROMO_ID:
+        verdict["status"] = "trial_eligible"
+    else:
+        verdict["status"] = "free"
+    return verdict
+
+
+def probe_plus_trial_status(account: Any, proxy: Optional[str] = None) -> dict[str, Any]:
+    """查这个号还能不能领首月免费的 Plus 试用。"""
+    checked_at = _utcnow_iso()
+    extra = getattr(account, "extra", {}) or {}
+    access_token = str(
+        extra.get("access_token")
+        or getattr(account, "access_token", "")
+        or getattr(account, "token", "")
+        or ""
+    ).strip()
+
+    if not access_token:
+        verdict = {
+            "status": "no_access_token",
+            "plan": "",
+            "promo_id": "",
+            "http_status": 0,
+            "message": "账号缺少 access_token",
+        }
+    else:
+        try:
+            result = _probe_accounts_check(
+                access_token,
+                account_id=extract_chatgpt_account_id(account),
+                device_id=_extract_oai_device_id(account),
+                proxy=proxy,
+            )
+        except Exception as error:  # noqa: BLE001 - 网络问题不该冒充检测结论
+            verdict = {
+                "status": "error",
+                "plan": "",
+                "promo_id": "",
+                "http_status": 0,
+                "message": f"请求失败：{error}"[:500],
+            }
+        else:
+            verdict = classify_plus_trial(result)
+
+    verdict["label"] = PLUS_TRIAL_LABELS.get(verdict["status"], verdict["status"])
+    verdict["checked_at"] = checked_at
+    return verdict
 
 
 def probe_local_chatgpt_status(account: Any, proxy: Optional[str] = None) -> dict[str, Any]:

@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select, func
 from pydantic import BaseModel
 from core.db import AccountModel, get_session
+from services.chatgpt_account_state import filter_accounts_by_plus_status
 from typing import Optional
 from datetime import datetime, timezone
 import io, csv, json, logging
@@ -41,6 +42,7 @@ def list_accounts(
     platform: Optional[str] = None,
     status: Optional[str] = None,
     email: Optional[str] = None,
+    plus_status: Optional[str] = None,
     created_at_start: Optional[datetime] = None,
     created_at_end: Optional[datetime] = None,
     page: int = 1,
@@ -58,9 +60,14 @@ def list_accounts(
         q = q.where(AccountModel.created_at >= created_at_start)
     if created_at_end:
         q = q.where(AccountModel.created_at <= created_at_end)
-    total = len(session.exec(q).all())
-    items = session.exec(q.offset((page - 1) * page_size).limit(page_size)).all()
-    return {"total": total, "page": page, "items": items}
+    rows = session.exec(q).all()
+    # Plus 试用状态存在 extra_json 里，SQL 筛不动，只能取出来再过一遍。
+    # 反正这个接口本来就要把整个结果集读出来算 total。
+    if plus_status:
+        rows = filter_accounts_by_plus_status(rows, plus_status)
+    total = len(rows)
+    start = max(page - 1, 0) * page_size
+    return {"total": total, "page": page, "items": rows[start : start + page_size]}
 
 
 @router.post("")
