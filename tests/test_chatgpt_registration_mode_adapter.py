@@ -6,6 +6,7 @@ from platforms.chatgpt.chatgpt_registration_mode_adapter import (
     CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN,
     ChatGPTRegistrationContext,
     build_chatgpt_registration_mode_adapter,
+    resolve_chatgpt_bind_2fa,
     resolve_chatgpt_registration_mode,
 )
 from platforms.chatgpt.registration_engine import RegistrationResult
@@ -37,6 +38,40 @@ class ChatGPTRegistrationModeAdapterTests(unittest.TestCase):
             resolve_chatgpt_registration_mode({"chatgpt_has_refresh_token_solution": False}),
             CHATGPT_REGISTRATION_MODE_ACCESS_TOKEN_ONLY,
         )
+
+    def test_bind_2fa_is_opt_in_and_accepts_string_flags(self):
+        self.assertFalse(resolve_chatgpt_bind_2fa({}))
+        self.assertFalse(resolve_chatgpt_bind_2fa({"chatgpt_bind_2fa": False}))
+        self.assertTrue(resolve_chatgpt_bind_2fa({"chatgpt_bind_2fa": True}))
+        self.assertTrue(resolve_chatgpt_bind_2fa({"chatgpt_bind_2fa": "1"}))
+        self.assertFalse(resolve_chatgpt_bind_2fa({"chatgpt_bind_2fa": "0"}))
+
+    def test_bind_2fa_reaches_the_engine_and_the_account_record(self):
+        captured = {}
+
+        class FakeEngine:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self):
+                return RegistrationResult(success=True, email="demo@example.com")
+
+        adapter = build_chatgpt_registration_mode_adapter({"chatgpt_bind_2fa": True})
+        with mock.patch(
+            "platforms.chatgpt.chatgpt_registration_mode_adapter.ChatGPTRegistrationEngine",
+            FakeEngine,
+        ):
+            adapter.run(_context())
+
+        self.assertTrue(captured["bind_2fa"])
+        account = adapter.build_account(
+            RegistrationResult(
+                success=True, email="demo@example.com", metadata={"totp_secret": "JBSWY3DPEHPK3PXP"}
+            ),
+            fallback_password="fallback",
+        )
+        self.assertTrue(account.extra["chatgpt_bind_2fa"])
+        self.assertEqual(account.extra["totp_secret"], "JBSWY3DPEHPK3PXP")
 
     def test_build_account_marks_selected_mode(self):
         adapter = build_chatgpt_registration_mode_adapter(

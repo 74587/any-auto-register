@@ -100,6 +100,17 @@ class MailboxProviderAdapterTests(unittest.TestCase):
         _, kwargs = mailbox.wait_calls[0]
         self.assertEqual(kwargs["timeout"], 200)
 
+    def test_prime_rebaselines_for_a_second_leg(self):
+        mailbox = _StubMailbox(ids={"mid-1"})
+        adapter = MailboxProviderAdapter(mailbox)
+        adapter.create_mailbox()
+
+        # 注册那封码信到了，接着跑绑 2FA 时不能再把它当"新邮件"
+        mailbox._ids = {"mid-1", "mid-2"}
+        adapter.prime()
+
+        self.assertEqual(adapter._before_ids, {"mid-1", "mid-2"})
+
     def test_wait_for_otp_requires_created_mailbox(self):
         adapter = MailboxProviderAdapter(_StubMailbox())
         with self.assertRaises(RuntimeError):

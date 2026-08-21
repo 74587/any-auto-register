@@ -32,9 +32,11 @@ import {
   SyncOutlined,
   KeyOutlined,
 } from '@ant-design/icons'
+import { ChatGPTBind2faSwitch } from '@/components/ChatGPTBind2faSwitch'
 import { ChatGPTRegisterFlowSelect } from '@/components/ChatGPTRegisterFlowSelect'
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
+import { usePersistentChatGPTBind2fa } from '@/hooks/usePersistentChatGPTBind2fa'
 import { usePersistentChatGPTRegisterFlow } from '@/hooks/usePersistentChatGPTRegisterFlow'
 import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatGPTRegistrationMode'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
@@ -74,7 +76,17 @@ function normalizeAccount(account: any) {
   const cliproxySync = syncStatuses.cliproxyapi && typeof syncStatuses.cliproxyapi === 'object' ? syncStatuses.cliproxyapi : {}
   const chatgptLocal = extra.chatgpt_local && typeof extra.chatgpt_local === 'object' ? extra.chatgpt_local : {}
   const plusCheck = extra.plus_check && typeof extra.plus_check === 'object' ? extra.plus_check : {}
-  return { ...account, extra, cpaSync, sub2apiSync, cliproxySync, chatgptLocal, plusCheck }
+  const totpSecret = String(extra.totp_secret || '')
+  return {
+    ...account,
+    extra,
+    cpaSync,
+    sub2apiSync,
+    cliproxySync,
+    chatgptLocal,
+    plusCheck,
+    totpSecret,
+  }
 }
 
 function formatSyncTime(value?: string) {
@@ -635,6 +647,8 @@ export default function Accounts() {
     usePersistentChatGPTRegistrationMode()
   const { registerFlow: chatgptRegisterFlow, setRegisterFlow: setChatgptRegisterFlow } =
     usePersistentChatGPTRegisterFlow()
+  const { bind2fa: chatgptBind2fa, setBind2fa: setChatgptBind2fa } =
+    usePersistentChatGPTBind2fa()
   const [importText, setImportText] = useState('')
   const [importLoading, setImportLoading] = useState(false)
   const [taskId, setTaskId] = useState<string | null>(null)
@@ -855,6 +869,7 @@ export default function Accounts() {
           currentPlatform,
           chatgptRegistrationMode,
           chatgptRegisterFlow,
+          chatgptBind2fa,
         )
       const adaptedRegisterExtra = chatgptRegistrationRequestAdapter
         ? chatgptRegistrationRequestAdapter.extendExtra(registerExtra)
@@ -1223,6 +1238,11 @@ export default function Accounts() {
                 <Tag color={sub2apiMeta.color} title={uploadSyncTitle('Sub2API', sub2apiSync)}>
                   Sub2API {sub2apiMeta.label}
                 </Tag>
+                {record.totpSecret ? (
+                  <Tag color="purple" title="密钥在账号详情里，可复制导入验证器">
+                    2FA 已绑
+                  </Tag>
+                ) : null}
               </div>
             </div>
           )
@@ -1546,6 +1566,12 @@ export default function Accounts() {
                     onChange={setChatgptRegistrationMode}
                   />
                 </Form.Item>
+                <Form.Item label="绑定 2FA">
+                  <ChatGPTBind2faSwitch
+                    enabled={chatgptBind2fa}
+                    onChange={setChatgptBind2fa}
+                  />
+                </Form.Item>
               </>
             )}
             <Form.Item>
@@ -1733,6 +1759,32 @@ export default function Accounts() {
                 </div>
               )
             })()}
+            {currentAccount.totpSecret ? (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ marginBottom: 4, fontWeight: 500, fontSize: 13 }}>TOTP 2FA 密钥</div>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 8,
+                    background: token.colorFillAlter,
+                    border: `1px solid ${token.colorBorder}`,
+                    borderRadius: token.borderRadius,
+                    padding: '8px 10px',
+                  }}
+                >
+                  <Text
+                    style={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all', flex: 1, userSelect: 'text' }}
+                    copyable={{ text: currentAccount.totpSecret, tooltips: ['复制密钥', '已复制'] }}
+                  >
+                    {currentAccount.totpSecret}
+                  </Text>
+                </div>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  在验证器 App 里选「手动输入密钥」，账户名填 {currentAccount.email}。
+                </Text>
+              </div>
+            ) : null}
             {currentPlatform === 'chatgpt' ? (
               <DetailSection title="本地真实状态">
                 {currentAccount.chatgptLocal && Object.keys(currentAccount.chatgptLocal).length > 0 ? (

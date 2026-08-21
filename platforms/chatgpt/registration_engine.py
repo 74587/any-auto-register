@@ -237,6 +237,9 @@ class ChatGPTRegistrationEngine:
             return
 
         self.log("绑定 2FA：快路径没成，改走重新登录再绑（会多花一次 PoW，可能要收一封验证码）…")
+        if mail_provider is not None:
+            # 注册那封码信还躺在收件箱里，不重新打基线会被当成绑定链的码用
+            mail_provider.prime()
         result = bind_totp_via_login(
             Config(proxy=self.proxy),
             email,

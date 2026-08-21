@@ -1,0 +1,357 @@
+import unittest
+from unittest import mock
+
+from platforms.chatgpt.protocol import totp
+from platforms.chatgpt.protocol.two_factor import (
+    bind_totp_inline,
+    bind_totp_via_login,
+    enroll_totp,
+)
+from platforms.chatgpt.registration_engine import ChatGPTRegistrationEngine
+from services import chatgpt_two_factor
+
+SECRET = "JBSWY3DPEHPK3PXP"
+
+
+class _Resp:
+    def __init__(self, status_code=200, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text if text else ("{}" if payload is None else "")
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("not json")
+        return self._payload
+
+
+class _FakeSession:
+    """按 URL 排队响应，顺便记下每个请求的 headers / body。"""
+
+    def __init__(self, responses):
+        self._responses = {url: list(items) for url, items in responses.items()}
+        self.calls = []
+
+    def _pop(self, method, url, headers, json_body):
+        self.calls.append({"method": method, "url": url, "headers": headers, "json": json_body})
+        queue = self._responses.get(url)
+        if not queue:
+            raise AssertionError(f"没有为 {method} {url} 准备响应")
+        return queue.pop(0)
+
+    def get(self, url, headers=None, timeout=None, **kwargs):
+        return self._pop("GET", url, headers or {}, None)
+
+    def post(self, url, headers=None, json=None, timeout=None, **kwargs):
+        return self._pop("POST", url, headers or {}, json)
+
+
+class _FakeFlow:
+    def __init__(self, responses):
+        self.session = _FakeSession(responses)
+        self.result = mock.Mock(access_token="at-inline", totp_secret="")
+
+    def _common_headers(self, referer=""):
+        return {"Referer": referer}
+
+    def _trace_http(self, *args, **kwargs):
+        return None
+
+
+def _bind_responses(*, mfa_enabled=False, enroll=None, activate_status=200):
+    enroll_payload = (
+        {"secret": SECRET, "session_id": "sess-1", "factor": {"id": "factor-1"}}
+        if enroll is None
+        else enroll
+    )
+    return {
+        "https://chatgpt.com/backend-api/accounts/mfa_info": [
+            _Resp(200, {"mfa_enabled": mfa_enabled, "factors": {"totp": mfa_enabled}}),
+            _Resp(200, {"mfa_enabled": True, "factors": {"totp": True}}),
+        ],
+        "https://chatgpt.com/backend-api/accounts/mfa/enroll": [_Resp(200, enroll_payload)],
+        "https://chatgpt.com/backend-api/accounts/mfa/user/activate_enrollment": [
+            _Resp(activate_status, {"success": activate_status == 200}, text='{"message":"太频繁"}')
+        ],
+    }
+
+
+class TotpTests(unittest.TestCase):
+    def test_known_vector_matches_rfc_reference(self):
+        # RFC 6238 附录 B 的 SHA1 向量：T = 59s 对应 94287082
+        self.assertEqual(totp.hotp("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", 1, digits=8), "94287082")
+
+    def test_code_is_six_digits_and_verifies_within_window(self):
+        code = totp.totp_now(SECRET, at=1_700_000_000)
+        self.assertRegex(code, r"^\d{6}$")
+        self.assertTrue(totp.verify_totp(SECRET, code, at=1_700_000_000))
+        # 前后各一个窗口都认，跨窗口提交不至于白跑一次
+        self.assertTrue(totp.verify_totp(SECRET, code, at=1_700_000_000 + 30))
+        self.assertFalse(totp.verify_totp(SECRET, code, at=1_700_000_000 + 300))
+
+    def test_secret_is_normalized_before_decoding(self):
+        spaced = "jbsw y3dp ehpk 3pxp"
+        self.assertEqual(totp.totp_now(spaced, at=1_700_000_000), totp.totp_now(SECRET, at=1_700_000_000))
+
+    def test_otpauth_uri_carries_secret_and_issuer(self):
+        uri = totp.otpauth_uri(SECRET, "demo@example.com")
+        self.assertTrue(uri.startswith("otpauth://totp/"))
+        self.assertIn(f"secret={SECRET}", uri)
+        self.assertIn("issuer=ChatGPT", uri)
+        self.assertEqual(totp.otpauth_uri("", "demo@example.com"), "")
+
+
+class EnrollTests(unittest.TestCase):
+    def setUp(self):
+        # 复核前那 2 秒是留给服务端落库的，测试里没有服务端
+        patcher = mock.patch("platforms.chatgpt.protocol.two_factor.time.sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_happy_path_enrolls_activates_and_returns_secret(self):
+        flow = _FakeFlow(_bind_responses())
+
+        result = enroll_totp(flow, "at-1")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.secret, SECRET)
+        self.assertEqual(result.factor_id, "factor-1")
+        # 密钥要在返回之前就挂到 result 上，activate 再炸也不至于丢
+        self.assertEqual(flow.result.totp_secret, SECRET)
+
+        activate = [c for c in flow.session.calls if c["url"].endswith("activate_enrollment")][0]
+        self.assertEqual(activate["json"]["factor_type"], "totp")
+        self.assertEqual(activate["json"]["session_id"], "sess-1")
+        self.assertTrue(totp.verify_totp(SECRET, activate["json"]["code"]))
+        self.assertEqual(activate["headers"]["Authorization"], "Bearer at-1")
+
+    def test_already_bound_account_is_not_re_enrolled(self):
+        flow = _FakeFlow(_bind_responses(mfa_enabled=True))
+
+        result = enroll_totp(flow, "at-1")
+
+        self.assertFalse(result.ok)
+        self.assertTrue(result.already_bound)
+        self.assertEqual(result.secret, "")
+        self.assertNotIn(
+            "https://chatgpt.com/backend-api/accounts/mfa/enroll",
+            [call["url"] for call in flow.session.calls],
+        )
+
+    def test_enroll_without_secret_is_a_failure(self):
+        flow = _FakeFlow(_bind_responses(enroll={"session_id": "sess-1"}))
+
+        result = enroll_totp(flow, "at-1")
+
+        self.assertFalse(result.ok)
+        self.assertIn("secret", result.error_message)
+
+    def test_activate_failure_keeps_the_secret_for_the_caller(self):
+        flow = _FakeFlow(_bind_responses(activate_status=429))
+
+        result = enroll_totp(flow, "at-1")
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.secret, SECRET)
+        self.assertIn("429", result.error_message)
+
+    def test_missing_access_token_short_circuits(self):
+        flow = _FakeFlow({})
+        self.assertFalse(enroll_totp(flow, "").ok)
+        self.assertEqual(flow.session.calls, [])
+
+
+class BindInlineTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch("platforms.chatgpt.protocol.two_factor.time.sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_inline_falls_back_to_flow_access_token(self):
+        flow = _FakeFlow(_bind_responses())
+
+        result = bind_totp_inline(flow)
+
+        self.assertTrue(result.ok)
+        enroll = [c for c in flow.session.calls if c["url"].endswith("/mfa/enroll")][0]
+        self.assertEqual(enroll["headers"]["Authorization"], "Bearer at-inline")
+
+    def test_inline_never_raises(self):
+        flow = _FakeFlow({})
+        flow.result.access_token = "at-inline"
+
+        result = bind_totp_inline(flow)
+
+        self.assertFalse(result.ok)
+        self.assertIn("没有为", result.error_message)
+
+    def test_slow_path_requires_email_and_password(self):
+        self.assertFalse(bind_totp_via_login(mock.Mock(), "", "pw").ok)
+        self.assertFalse(bind_totp_via_login(mock.Mock(), "a@b.com", "").ok)
+
+
+class RegistrationEngineTwoFactorTests(unittest.TestCase):
+    def setUp(self):
+        self.logs: list[str] = []
+
+    def _engine(self, **overrides):
+        kwargs = dict(mailbox=mock.Mock(), email="demo@example.com", bind_2fa=True)
+        kwargs.update(overrides)
+        return ChatGPTRegistrationEngine(log_fn=self.logs.append, **kwargs)
+
+    def test_hook_is_only_attached_when_binding_is_enabled(self):
+        with mock.patch(
+            "platforms.chatgpt.registration_engine.AuthFlow"
+        ) as auth_flow, mock.patch(
+            "platforms.chatgpt.registration_engine.resolve_sms_settings", return_value={}
+        ):
+            self._engine(bind_2fa=False)._build_flow()
+            self.assertIsNone(auth_flow.call_args.kwargs["on_session_ready"])
+
+            self._engine(bind_2fa=True)._build_flow()
+            self.assertIsNotNone(auth_flow.call_args.kwargs["on_session_ready"])
+
+    def test_session_ready_hook_binds_and_logs_the_secret(self):
+        engine = self._engine()
+        flow = mock.Mock()
+
+        with mock.patch(
+            "platforms.chatgpt.registration_engine.bind_totp_inline",
+            return_value=mock.Mock(ok=True, secret=SECRET, already_bound=False),
+        ) as bind:
+            engine._on_session_ready(flow, "at-1")
+
+        bind.assert_called_once_with(flow, "at-1")
+        self.assertTrue(any(SECRET in line for line in self.logs))
+
+    def test_slow_path_runs_only_when_fast_path_left_no_secret(self):
+        engine = self._engine()
+        flow = mock.Mock()
+        flow.result = mock.Mock(totp_secret=SECRET, email="demo@example.com", password="pw")
+
+        with mock.patch("platforms.chatgpt.registration_engine.bind_totp_via_login") as slow:
+            engine._ensure_two_factor(flow, None)
+
+        slow.assert_not_called()
+
+    def test_slow_path_binds_and_writes_the_secret_back(self):
+        engine = self._engine()
+        flow = mock.Mock()
+        flow.result = mock.Mock(
+            totp_secret="", bound_email="", email="demo@example.com", password="pw"
+        )
+
+        with mock.patch(
+            "platforms.chatgpt.registration_engine.bind_totp_via_login",
+            return_value=mock.Mock(ok=True, secret=SECRET, already_bound=False),
+        ) as slow:
+            engine._ensure_two_factor(flow, None)
+
+        self.assertEqual(slow.call_args.args[1], "demo@example.com")
+        self.assertEqual(slow.call_args.args[2], "pw")
+        self.assertEqual(flow.result.totp_secret, SECRET)
+
+    def test_phone_only_account_skips_the_slow_path(self):
+        engine = self._engine()
+        flow = mock.Mock()
+        flow.result = mock.Mock(totp_secret="", bound_email="", email="+66123456789", password="pw")
+
+        with mock.patch("platforms.chatgpt.registration_engine.bind_totp_via_login") as slow:
+            engine._ensure_two_factor(flow, None)
+
+        slow.assert_not_called()
+        self.assertTrue(any("没有邮箱身份" in line for line in self.logs))
+
+    def test_binding_disabled_does_nothing(self):
+        engine = self._engine(bind_2fa=False)
+        flow = mock.Mock()
+        flow.result = mock.Mock(totp_secret="", bound_email="", email="demo@example.com", password="pw")
+
+        with mock.patch("platforms.chatgpt.registration_engine.bind_totp_via_login") as slow:
+            engine._ensure_two_factor(flow, None)
+
+        slow.assert_not_called()
+
+
+class AccountBindServiceTests(unittest.TestCase):
+    def test_existing_secret_is_never_overwritten(self):
+        result = chatgpt_two_factor.bind_account_two_factor(
+            email="demo@example.com", extra={"totp_secret": SECRET}, config={}, log_fn=lambda _: None
+        )
+
+        self.assertTrue(result.already_bound)
+        self.assertEqual(result.secret, SECRET)
+
+    def test_session_reuse_is_tried_before_re_login(self):
+        with mock.patch.object(
+            chatgpt_two_factor,
+            "_bind_via_session",
+            return_value=mock.Mock(ok=True, secret=SECRET, already_bound=False),
+        ) as session_bind, mock.patch.object(chatgpt_two_factor, "bind_totp_via_login") as login_bind:
+            result = chatgpt_two_factor.bind_account_two_factor(
+                email="demo@example.com",
+                password="pw",
+                extra={"access_token": "at-1"},
+                config={},
+                log_fn=lambda _: None,
+            )
+
+        session_bind.assert_called_once()
+        login_bind.assert_not_called()
+        self.assertEqual(result.secret, SECRET)
+
+    def test_re_login_takes_over_when_the_session_is_dead(self):
+        with mock.patch.object(
+            chatgpt_two_factor,
+            "_bind_via_session",
+            return_value=mock.Mock(ok=False, already_bound=False, summary=lambda: "会话失效"),
+        ), mock.patch.object(
+            chatgpt_two_factor, "_resolve_mail_provider", return_value=None
+        ), mock.patch.object(
+            chatgpt_two_factor,
+            "bind_totp_via_login",
+            return_value=mock.Mock(ok=True, secret=SECRET, already_bound=False),
+        ) as login_bind:
+            result = chatgpt_two_factor.bind_account_two_factor(
+                email="demo@example.com",
+                password="pw",
+                extra={"access_token": "at-1"},
+                config={},
+                log_fn=lambda _: None,
+            )
+
+        login_bind.assert_called_once()
+        self.assertEqual(result.secret, SECRET)
+
+    def test_re_login_is_skipped_without_a_password(self):
+        with mock.patch.object(
+            chatgpt_two_factor,
+            "_bind_via_session",
+            return_value=mock.Mock(ok=False, already_bound=False, summary=lambda: "会话失效"),
+        ), mock.patch.object(chatgpt_two_factor, "bind_totp_via_login") as login_bind:
+            result = chatgpt_two_factor.bind_account_two_factor(
+                email="demo@example.com",
+                extra={"access_token": "at-1"},
+                config={},
+                log_fn=lambda _: None,
+            )
+
+        login_bind.assert_not_called()
+        self.assertIn("没有密码", result.error_message)
+
+    def test_patch_records_the_attempt_without_clobbering_a_missing_secret(self):
+        from platforms.chatgpt.protocol.two_factor import TwoFactorBindResult
+
+        failed = chatgpt_two_factor.build_extra_patch(
+            TwoFactorBindResult(error_message="enroll 403")
+        )
+        self.assertNotIn("totp_secret", failed)
+        self.assertFalse(failed["chatgpt_2fa"]["bound"])
+
+        ok = chatgpt_two_factor.build_extra_patch(TwoFactorBindResult(ok=True, secret=SECRET))
+        self.assertEqual(ok["totp_secret"], SECRET)
+        self.assertTrue(ok["chatgpt_2fa"]["bound"])
+
+
+if __name__ == "__main__":
+    unittest.main()
