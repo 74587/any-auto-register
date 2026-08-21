@@ -98,7 +98,14 @@ const TAB_ITEMS = [
       {
         title: '默认注册方式',
         desc: '控制注册任务如何执行',
-        fields: [{ key: 'default_executor', label: '执行器类型', type: 'select' }],
+        fields: [
+          { key: 'default_executor', label: '执行器类型', type: 'select' },
+          {
+            key: 'register_retry_times',
+            label: '整流程失败重试轮数',
+            placeholder: '1（0 表示失败即止）',
+          },
+        ],
       },
     ],
   },
@@ -354,7 +361,7 @@ const TAB_ITEMS = [
       },
       {
         title: '租号与重试',
-        desc: '单号窗口内会按固定节奏触发 OpenAI 端 resend，窗口用尽则换号',
+        desc: '单号窗口内只轮询接码平台收码，窗口用尽则换号',
         fields: [
           { key: 'sms_max_price', label: '单号价格上限', placeholder: '留空或 0 表示不限' },
           { key: 'sms_fixed_price', label: '固定价格', placeholder: '留空表示不锁价' },

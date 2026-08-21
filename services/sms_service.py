@@ -98,16 +98,16 @@ class BaseSmsProvider(ABC):
         return True
 
     def mark_code_failed(self, activation_id: str, reason: str = "") -> None:
-        """业务侧收到码但 validate 失败 → 请求 resend。"""
+        """业务侧收到码但 validate 失败 → 记下这个码，别再拿它去验。"""
 
     def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
         """业务侧拒绝该手机号（add-phone/send 返错）→ 停止复用并退款。"""
 
+    def stop_reuse(self, activation_id: str, reason: str = "") -> None:
+        """号已经被业务侧占用（注册出账号了）→ 不再复用，但也不退款。"""
+
     def mark_send_succeeded(self, activation_id: str) -> None:
         """业务侧已成功触发短信发送（add-phone/send 200）。"""
-
-    def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
-        """注册 resend 钩子，长等待时回调业务侧重新触发 OTP。"""
 
 
 SMS_COUNTRY_NAMES_CN: dict[str, str] = {
@@ -191,6 +191,25 @@ def _cache_file() -> Path:
     return cache_dir / ".sms_phone_cache.json"
 
 
+# getStatusV2 的数字状态：8 = 已取消
+SMS_STATUS_CANCELED = 8
+
+
+def _status_token(text) -> str:
+    """平台的纯文本状态本身就是一行短 token（``BAD_KEY`` 这种）。
+
+    长得不像 token 的都是错误页正文之类的响应体，日志里不需要它们 —— 丢掉。
+    """
+    if isinstance(text, dict):
+        text = text.get("message") or text.get("code") or ""
+    if not isinstance(text, str):
+        return ""
+    token = " ".join(text.split())
+    if not token or len(token) > 60 or "<" in token:
+        return ""
+    return token
+
+
 def _parse_sms_status_text(text: str) -> dict:
     text = str(text or "").strip()
     if text == "STATUS_WAIT_CODE":
@@ -203,7 +222,7 @@ def _parse_sms_status_text(text: str) -> dict:
         return {"status": "ok", "code": text.split(":", 1)[1]}
     if text == "STATUS_CANCEL":
         return {"status": "cancel"}
-    return {"status": "unknown", "raw": text}
+    return {"status": "unknown", "raw": _status_token(text)}
 
 
 def _make_sms_candidate(activation_id: str, source: str, code) -> Optional[dict]:
@@ -247,9 +266,9 @@ class SmsActivateProvider(BaseSmsProvider):
         self._proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
         self.reuse_phone_to_max = bool(reuse_phone_to_max)
         self.phone_success_max = max(0, int(phone_success_max or 0))
-        self._resend_callback: Optional[Callable[[], None]] = None
         self.last_code_result: Optional[dict] = None
         self.current_activation: Optional[SmsActivation] = None
+        self._warned_low_bid = False
 
     # ── HTTP ──
 
@@ -592,9 +611,42 @@ class SmsActivateProvider(BaseSmsProvider):
                     return activation
 
             detail = " | ".join(failures) if failures else "未知"
+            if "NO_NUMBERS" in detail:
+                self._explain_no_numbers(service_code, country_candidates)
             raise RuntimeError(
                 f"依次尝试 {len(country_candidates)} 个候选国家全部失败: {detail}"
             ) from last_exc
+
+    def _explain_no_numbers(self, service: str, countries: list[str]) -> None:
+        """NO_NUMBERS 多半不是没货，是出价太低 —— 把挂牌价查出来摆在日志里。
+
+        平台按出价撮合，出价压在挂牌价以下时既租不到号，偶尔撮合成功的也是被反复
+        回收的号段。只查一次价，别让每轮换号都多打一次接口。
+        """
+        bid = self.fixed_price if self.fixed_price > 0 else self.max_price
+        if bid <= 0 or self._warned_low_bid:
+            return
+        self._warned_low_bid = True
+        for country in countries:
+            try:
+                prices = self.get_prices(service, country) or {}
+                market = _safe_float(
+                    ((prices.get(str(country)) or {}).get(service) or {}).get("cost"), 0
+                )
+            except Exception:
+                continue
+            if market > 0 and bid < market:
+                logger.warning(
+                    "租不到号多半是出价太低: %s 的 %s 挂牌价 %.3f，当前出价只有 %.3f"
+                    "（约挂牌价的 %d%%）；把接码设置里的固定价/最高价提到 %.2f 以上再试",
+                    country_label(str(country)),
+                    service,
+                    market,
+                    bid,
+                    round(bid / market * 100),
+                    market,
+                )
+                return
 
     # ── 等码 / 状态查询 ──
 
@@ -604,22 +656,34 @@ class SmsActivateProvider(BaseSmsProvider):
         )
 
     def get_status_v2(self, activation_id: str) -> dict:
-        resp = self._request({"action": "getStatusV2", "id": activation_id})
+        # 少了 type=sms 平台只回 {"error":"Bad type parameter"}，而这个错解析下来
+        # 长得和"还在等码"一模一样 —— 等于白等一整个窗口还以为一切正常。
+        resp = self._request({"action": "getStatusV2", "id": activation_id, "type": "sms"})
+        raw_text = (resp.text or "").strip()
         try:
             data = resp.json()
         except ValueError:
-            return _parse_sms_status_text(resp.text.strip())
+            return _parse_sms_status_text(raw_text)
 
         if isinstance(data, str):
             return _parse_sms_status_text(data)
+        # raw 只放平台自己写在字段里的那句话（error / status_description），
+        # 响应体原文不进这个 dict —— 它最后是要被打进任务日志的。
         if not isinstance(data, dict):
-            return {"status": "unknown"}
+            return {"status": "unknown", "raw": ""}
+
+        if data.get("error"):
+            return {"status": "unknown", "raw": _status_token(data.get("error"))}
 
         raw_status = data.get("status")
         if isinstance(raw_status, str):
             parsed = _parse_sms_status_text(raw_status)
             if parsed.get("status") != "unknown":
                 return parsed
+
+        candidate = _make_sms_candidate(activation_id, "getStatusV2.code", data.get("code"))
+        if candidate:
+            return candidate
         for channel in ("sms", "call"):
             item = data.get(channel)
             if isinstance(item, dict):
@@ -628,14 +692,11 @@ class SmsActivateProvider(BaseSmsProvider):
                 )
                 if candidate:
                     return candidate
-        return {"status": "wait_code"}
 
-    def request_resend_sms(self, activation_id: str) -> bool:
-        try:
-            self._request({"action": "setStatus", "id": activation_id, "status": 3})
-            return True
-        except Exception:
-            return False
+        description = str(data.get("status_description") or "").strip()
+        if _safe_int(raw_status, -1) == SMS_STATUS_CANCELED:
+            return {"status": "cancel", "raw": description}
+        return {"status": "wait_code", "raw": description}
 
     def wait_for_code(
         self,
@@ -643,23 +704,22 @@ class SmsActivateProvider(BaseSmsProvider):
         *,
         timeout: int = 80,
         poll: int = 3,
-        openai_resend_interval: int = 20,
-        openai_resend_max: int = 3,
     ) -> Optional[dict]:
-        """等短信验证码。
+        """等短信验证码：只轮询接码平台，不去催发。
 
-        每 ``openai_resend_interval`` 秒触发一次业务侧 resend（最多
-        ``openai_resend_max`` 次）并同步请求平台侧 resend；超时返回 None，
-        由上层 cancel 换号。
+        码是 OpenAI 那边一次性发出来的，催发既换不来第二条短信，还会把当前这条
+        challenge 弄失效。超时返回 None，由上层 cancel 换号。
         """
         start = time.time()
         deadline = start + timeout
-        resend_count = 0
-        last_platform_resend = start
         with _SMS_CACHE_LOCK:
             used_codes = set((_SMS_CACHE or {}).get("used_codes") or [])
 
+        last_seen = ""
+        next_report = start + 30
+
         while time.time() < deadline:
+            seen_this_round = []
             for source in ("v2", "v1"):
                 try:
                     result = (
@@ -670,7 +730,10 @@ class SmsActivateProvider(BaseSmsProvider):
                 except Exception as exc:
                     logger.debug("查询接码状态 %s 失败: %s", source, exc)
                     continue
+                seen_this_round.append(self._describe_status(source, result))
+                last_seen = " | ".join(seen_this_round)
                 if result.get("status") == "cancel":
+                    logger.info("平台报告号码已取消: %s", last_seen)
                     return None
                 if result.get("status") == "ok":
                     code = str(result.get("code") or "")
@@ -681,28 +744,32 @@ class SmsActivateProvider(BaseSmsProvider):
                             "sms_key": result.get("sms_key") or "",
                         }
 
-            elapsed = time.time() - start
-            expected_resend = min(openai_resend_max, int(elapsed // openai_resend_interval))
-            if expected_resend > resend_count and self._resend_callback:
-                try:
-                    self._resend_callback()
-                    resend_count = expected_resend
-                    logger.info(
-                        "已请求业务侧 resend (第 %d/%d 次, elapsed=%ds)",
-                        resend_count,
-                        openai_resend_max,
-                        int(elapsed),
-                    )
-                except Exception as exc:
-                    logger.warning("业务侧 resend 回调失败: %s", exc)
-                self.request_resend_sms(activation_id)
-                last_platform_resend = time.time()
-            elif time.time() - last_platform_resend >= openai_resend_interval:
-                self.request_resend_sms(activation_id)
-                last_platform_resend = time.time()
+            # 「一直没码」到底是平台没收到短信、还是号被取消了，光看超时看不出来
+            if time.time() >= next_report:
+                logger.info(
+                    "等码中 (已等 %ds/%ds)：平台状态 %s",
+                    int(time.time() - start),
+                    timeout,
+                    last_seen or "(未取到)",
+                )
+                next_report = time.time() + 30
 
             time.sleep(poll)
+
+        logger.warning(
+            "等码 %ds 结束，平台始终没收到短信：最后状态 %s", timeout, last_seen or "(未取到)"
+        )
         return None
+
+    @staticmethod
+    def _describe_status(source: str, result: dict) -> str:
+        """只报状态和平台给的那句说明；短信正文不进日志。"""
+        status = str(result.get("status") or "")
+        detail = str(result.get("raw") or "").strip()
+        parts = [f"{source}={status}"]
+        if detail:
+            parts.append(detail[:80])
+        return " ".join(parts)
 
     def get_code(self, activation_id: str, *, timeout: int = 180) -> str:
         # 传进来的 timeout 就是真 timeout：号码有 20 分钟生命周期，但 OpenAI 那边的
@@ -779,18 +846,21 @@ class SmsActivateProvider(BaseSmsProvider):
                     used.add(self.last_code_result["code"])
                     cache["used_codes"] = used
                 self._save_cache(cache)
-        if self._resend_callback:
-            try:
-                self._resend_callback()
-            except Exception:
-                pass
-        self.request_resend_sms(activation_id)
 
     def mark_send_succeeded(self, activation_id: str) -> None:
         try:
             self._request({"action": "setStatus", "id": activation_id, "status": 1})
         except Exception:
             pass
+
+    def stop_reuse(self, activation_id: str, reason: str = "") -> None:
+        with _SMS_CACHE_LOCK:
+            cache = _SMS_CACHE
+            if cache and str(cache.get("activation_id")) == str(activation_id):
+                cache["reuse_stopped"] = True
+                cache["stop_reason"] = reason or "号码已被业务侧占用"
+                self._save_cache(cache)
+                self._clear_cache()
 
     def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
         # 业务侧拒了这个号 → cancel 退款，号根本没用上，不能白花钱
@@ -813,9 +883,6 @@ class SmsActivateProvider(BaseSmsProvider):
                 cache["stop_reason"] = reason or "号码被业务侧拒绝"
                 self._save_cache(cache)
                 self._clear_cache()
-
-    def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
-        self._resend_callback = callback
 
 
 def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
@@ -918,7 +985,7 @@ class PhoneCallbackController:
             self.log(
                 f"提醒: {country_label(used_country)} 不在 OpenAI 纯短信白名单（{whitelist}）；"
                 "这些号段 OpenAI 可能改用 WhatsApp 发码，会出现"
-                "「发送成功但一直等不到短信」"
+                "「发送成功但一直等不到短信」（白名单内的号也只是概率更高，不保证收得到）"
             )
         return self.activation.phone_number
 
@@ -1011,11 +1078,12 @@ class PhoneCallbackController:
             except Exception:
                 pass
 
-    def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
-        try:
-            self._ensure_provider().set_resend_callback(callback)
-        except Exception:
-            pass
+    def stop_reuse(self, reason: str = "") -> None:
+        if self.activation and self.provider:
+            try:
+                self.provider.stop_reuse(self.activation.activation_id, reason=reason)
+            except Exception:
+                pass
 
     def cleanup(self) -> None:
         """流程结束（成功或失败）调用：释放未完成的号并解锁。"""

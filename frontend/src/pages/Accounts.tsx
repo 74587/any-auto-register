@@ -32,13 +32,19 @@ import {
   SyncOutlined,
   KeyOutlined,
 } from '@ant-design/icons'
+import { ChatGPTRegisterFlowSelect } from '@/components/ChatGPTRegisterFlowSelect'
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
+import { usePersistentChatGPTRegisterFlow } from '@/hooks/usePersistentChatGPTRegisterFlow'
 import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatGPTRegistrationMode'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
 import { buildChatGPTRegistrationRequestAdapter } from '@/lib/chatgptRegistrationRequestAdapter'
 import { apiFetch } from '@/lib/utils'
 import { normalizeExecutorForPlatform } from '@/lib/platforms'
+import {
+  DEFAULT_REGISTER_RETRY_TIMES,
+  normalizeRegisterRetryTimes,
+} from '@/lib/registerRetry'
 
 const { Text } = Typography
 
@@ -627,6 +633,8 @@ export default function Accounts() {
   const [detailForm] = Form.useForm()
   const { mode: chatgptRegistrationMode, setMode: setChatgptRegistrationMode } =
     usePersistentChatGPTRegistrationMode()
+  const { registerFlow: chatgptRegisterFlow, setRegisterFlow: setChatgptRegisterFlow } =
+    usePersistentChatGPTRegisterFlow()
   const [importText, setImportText] = useState('')
   const [importLoading, setImportLoading] = useState(false)
   const [taskId, setTaskId] = useState<string | null>(null)
@@ -847,6 +855,7 @@ export default function Accounts() {
         buildChatGPTRegistrationRequestAdapter(
           currentPlatform,
           chatgptRegistrationMode,
+          chatgptRegisterFlow,
         )
       const adaptedRegisterExtra = chatgptRegistrationRequestAdapter
         ? chatgptRegistrationRequestAdapter.extendExtra(registerExtra)
@@ -858,6 +867,7 @@ export default function Accounts() {
           platform: currentPlatform,
           count: values.count,
           concurrency: values.concurrency,
+          register_retry_times: normalizeRegisterRetryTimes(values.register_retry_times),
           register_delay_seconds: values.register_delay_seconds || 0,
           executor_type: executorType,
           captcha_solver: cfg.default_captcha_solver || 'yescaptcha',
@@ -1643,13 +1653,29 @@ export default function Accounts() {
             <Form.Item name="register_delay_seconds" label="每个注册延迟(秒)" initialValue={0}>
               <InputNumber min={0} precision={1} step={0.5} style={{ width: '100%' }} placeholder="0 = 不延迟" />
             </Form.Item>
+            <Form.Item
+              name="register_retry_times"
+              label="失败重试轮数"
+              initialValue={DEFAULT_REGISTER_RETRY_TIMES}
+              tooltip="整条注册流程失败后自动重开一轮：换新邮箱 / 新号码 / 新会话。0 表示失败即止。"
+            >
+              <InputNumber min={0} max={10} precision={0} style={{ width: '100%' }} placeholder="1" />
+            </Form.Item>
             {currentPlatform === 'chatgpt' && (
-              <Form.Item label="ChatGPT Token 方案">
-                <ChatGPTRegistrationModeSwitch
-                  mode={chatgptRegistrationMode}
-                  onChange={setChatgptRegistrationMode}
-                />
-              </Form.Item>
+              <>
+                <Form.Item label="注册方式">
+                  <ChatGPTRegisterFlowSelect
+                    flow={chatgptRegisterFlow}
+                    onChange={setChatgptRegisterFlow}
+                  />
+                </Form.Item>
+                <Form.Item label="ChatGPT Token 方案">
+                  <ChatGPTRegistrationModeSwitch
+                    mode={chatgptRegistrationMode}
+                    onChange={setChatgptRegistrationMode}
+                  />
+                </Form.Item>
+              </>
             )}
             <Form.Item>
               <Button type="primary" htmlType="submit" block loading={registerLoading}>

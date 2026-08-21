@@ -131,7 +131,22 @@ Chuyển đổi này có thể tìm thấy ở:
 - Trang tác vụ đăng ký
 - Cửa sổ popup đăng ký ChatGPT
 
-### 3. Nhận mã SMS (add-phone)
+### 3. Phương thức đăng ký ChatGPT
+
+Cũng tại hai nơi đó, bạn có thể chọn danh tính dùng để đăng ký. Tùy chọn này kết hợp tự do với phương thức Token ở trên:
+
+- **Đăng ký bằng email** (mặc định)
+  - Lấy địa chỉ từ pool email và đọc mã gửi qua email
+- **Đăng ký bằng số điện thoại**
+  - Thuê số từ nền tảng nhận mã và đọc mã SMS, không tốn email
+  - Tài khoản được liệt kê theo số điện thoại
+- **Đăng ký bằng số điện thoại + liên kết email**
+  - Đăng ký bằng số trước, sau đó liên kết một địa chỉ từ pool email và đọc một mã gửi qua email
+  - Sau khi liên kết, tài khoản được liệt kê theo email, số điện thoại nằm trong chi tiết tài khoản
+
+Hai phương thức dùng số điện thoại đều cần bật nhận mã và điền API Key tại **Cài đặt → 手机接码 (Nhận mã SMS)**, nếu không tác vụ sẽ báo lỗi ngay. Bước liên kết email chỉ được chấp nhận khi OpenAI còn giữ add-email trong luồng authorize hiện tại; nếu bị từ chối thì tài khoản vẫn được giữ lại và lý do được ghi trong chi tiết tài khoản để liên kết sau.
+
+### 4. Nhận mã SMS (add-phone)
 
 OpenAI yêu cầu một số lượt đăng ký phải liên kết số điện thoại. Khi gặp add-phone, hệ thống tự thuê số, chờ SMS và gửi mã xác minh mà không cần thao tác thủ công. Cấu hình tại **Cài đặt → 手机接码 (Nhận mã SMS)**:
 
@@ -152,7 +167,7 @@ OpenAI yêu cầu một số lượt đăng ký phải liên kết số điện 
 
 ID quốc gia, số giây chờ mỗi số và số lần đổi số tối đa còn có thể ghi đè theo từng tác vụ ở trang tác vụ đăng ký. Nền tảng và API Key chỉ được quản lý trong cấu hình toàn cục.
 
-### 4. Đồng bộ trạng thái hàng loạt & re-upload cho ChatGPT
+### 5. Đồng bộ trạng thái hàng loạt & re-upload cho ChatGPT
 
 Ở đầu trang danh sách ChatGPT, hiện có hai loại chức năng hàng loạt:
 

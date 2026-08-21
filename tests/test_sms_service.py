@@ -217,6 +217,42 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         # 每个国家先试 V2 再退 V1
         self.assertEqual(calls[:2], [("getNumberV2", "16"), ("getNumber", "16")])
 
+    def test_no_numbers_points_at_the_bid_being_below_market(self):
+        """NO_NUMBERS 大多不是没货，是出价压得太低。"""
+        provider = SmsActivateProvider(api_key="k", reuse_phone_to_max=False, fixed_price=0.054)
+
+        with (
+            mock.patch.object(provider, "_request_number", side_effect=RuntimeError("NO_NUMBERS")),
+            mock.patch.object(
+                provider, "get_prices", return_value={"19": {"dr": {"cost": 0.548, "count": 200}}}
+            ),
+            self.assertLogs("services.sms_service", level="WARNING") as logs,
+        ):
+            with self.assertRaises(RuntimeError):
+                provider.get_number(service="dr", country_candidates=["19"])
+
+        joined = "\n".join(logs.output)
+        self.assertIn("出价太低", joined)
+        self.assertIn("0.548", joined)
+        self.assertIn("0.054", joined)
+
+    def test_bid_at_market_price_is_not_nagged_about(self):
+        provider = SmsActivateProvider(api_key="k", reuse_phone_to_max=False, max_price=0.6)
+
+        with (
+            mock.patch.object(provider, "_request_number", side_effect=RuntimeError("NO_NUMBERS")),
+            mock.patch.object(
+                provider, "get_prices", return_value={"19": {"dr": {"cost": 0.548}}}
+            ),
+            mock.patch.object(sms_service.logger, "warning") as warn,
+        ):
+            with self.assertRaises(RuntimeError):
+                provider.get_number(service="dr", country_candidates=["19"])
+
+        self.assertEqual(
+            [c for c in warn.call_args_list if "出价太低" in str(c)], []
+        )
+
     def test_get_number_reports_every_candidate_failure(self):
         provider = SmsActivateProvider(api_key="k", reuse_phone_to_max=False)
         with mock.patch.object(provider, "_request_number", side_effect=RuntimeError("NO_BALANCE")):
@@ -264,6 +300,21 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         self.assertEqual(req.call_args.args[0]["status"], 8)
         self.assertIsNone(sms_service._SMS_CACHE)
 
+    def test_stop_reuse_drops_the_cached_number_without_refunding(self):
+        """号已经注册出账号了：不能再复用，但它是好号，不该去要退款。"""
+        provider = SmsActivateProvider(api_key="k", reuse_phone_to_max=True)
+        info = {"activationId": "9001", "phoneNumber": "66123", "countryPhoneCode": "66"}
+
+        with mock.patch.object(provider, "_request_number", return_value=info), \
+                mock.patch.object(provider, "_request", return_value=_Resp("ACCESS_READY")) as req:
+            provider.get_number(service="dr", country_candidates=["52"])
+            provider.stop_reuse("9001", reason="已注册出账号")
+
+        self.assertIsNone(sms_service._SMS_CACHE)
+        self.assertFalse(
+            [call for call in req.call_args_list if call.args[0].get("status") == 8]
+        )
+
     def test_status_v2_extracts_code_from_channel_payload(self):
         provider = SmsActivateProvider(api_key="k")
         with mock.patch.object(
@@ -271,6 +322,64 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         ):
             result = provider.get_status_v2("9001")
         self.assertEqual(result["code"], "654321")
+
+    def test_status_v2_asks_for_the_sms_type(self):
+        """少了 type=sms 平台只回 Bad type parameter，等于整轮白等。"""
+        provider = SmsActivateProvider(api_key="k")
+        with mock.patch.object(
+            provider, "_request", return_value=_Resp(payload={"status": 1, "code": None})
+        ) as req:
+            provider.get_status_v2("9001")
+
+        self.assertEqual(req.call_args.args[0]["type"], "sms")
+
+    def test_status_v2_error_payload_is_not_mistaken_for_waiting(self):
+        provider = SmsActivateProvider(api_key="k")
+        with mock.patch.object(
+            provider,
+            "_request",
+            return_value=_Resp(
+                text='{"error":"Bad type parameter"}', payload={"error": "Bad type parameter"}
+            ),
+        ):
+            result = provider.get_status_v2("9001")
+
+        self.assertEqual(result["status"], "unknown")
+        self.assertIn("Bad type parameter", result["raw"])
+
+    def test_status_v2_reads_the_numeric_status(self):
+        provider = SmsActivateProvider(api_key="k")
+        waiting = {"status": 1, "status_description": "Waiting for sms", "full_sms": None, "code": None}
+        with mock.patch.object(provider, "_request", return_value=_Resp(payload=waiting)):
+            result = provider.get_status_v2("9001")
+        self.assertEqual(result["status"], "wait_code")
+        self.assertEqual(result["raw"], "Waiting for sms")
+
+        cancelled = {"status": 8, "status_description": "Activation is canceled", "code": None}
+        with mock.patch.object(provider, "_request", return_value=_Resp(payload=cancelled)):
+            result = provider.get_status_v2("9001")
+        self.assertEqual(result["status"], "cancel")
+
+        arrived = {"status": 6, "code": "246813", "full_sms": "Your code is 246813"}
+        with mock.patch.object(provider, "_request", return_value=_Resp(payload=arrived)):
+            result = provider.get_status_v2("9001")
+        self.assertEqual(result["code"], "246813")
+        # 短信正文只会被顺手打进日志，取码用不到它
+        self.assertNotIn("full_sms", result)
+
+    def test_status_v2_keeps_the_response_body_out_of_the_status_dict(self):
+        """状态 dict 会被打进任务日志，所以只放平台写在字段里的那句话。"""
+        provider = SmsActivateProvider(api_key="k")
+        body = '{"status":1,"status_description":"","secret":"never-log-me"}'
+        with mock.patch.object(
+            provider,
+            "_request",
+            return_value=_Resp(text=body, payload={"status": 1, "status_description": "", "secret": "never-log-me"}),
+        ):
+            result = provider.get_status_v2("9001")
+
+        self.assertEqual(result["status"], "wait_code")
+        self.assertNotIn("never-log-me", str(result))
 
     def test_status_v2_falls_back_to_plain_text(self):
         provider = SmsActivateProvider(api_key="k")
@@ -289,6 +398,42 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         provider = SmsActivateProvider(api_key="k")
         with mock.patch.object(provider, "get_status_v2", return_value={"status": "cancel"}):
             self.assertIsNone(provider.wait_for_code("9001", timeout=5))
+
+    def test_timeout_reports_what_the_platform_last_said(self):
+        """「一直没码」要能区分：平台压根没收到短信 vs 号被取消。"""
+        provider = SmsActivateProvider(api_key="k")
+        waiting = {
+            "status": "wait_code",
+            "raw": "Waiting for sms",
+        }
+        with mock.patch.object(provider, "get_status_v2", return_value=waiting), \
+                mock.patch.object(provider, "get_status", return_value={"status": "wait_code"}), \
+                self.assertLogs("services.sms_service", level="WARNING") as logs:
+            self.assertIsNone(provider.wait_for_code("9001", timeout=1, poll=1))
+
+        joined = "\n".join(logs.output)
+        self.assertIn("平台始终没收到短信", joined)
+        self.assertIn("Waiting for sms", joined)
+
+    def test_status_log_never_carries_the_sms_text(self):
+        """短信正文里就带着验证码，日志面板不该把它摊开。"""
+        provider = SmsActivateProvider(api_key="k")
+        line = provider._describe_status(
+            "v2", {"status": "wait_code", "raw": "Waiting for sms", "full_sms": "Your code is 246813"}
+        )
+        self.assertEqual(line, "v2=wait_code Waiting for sms")
+
+    def test_waiting_only_polls_and_never_asks_for_a_resend(self):
+        """等码期间只查状态：催发换不来第二条短信，只会把当前 challenge 弄坏。"""
+        provider = SmsActivateProvider(api_key="k")
+        with mock.patch.object(provider, "_request", return_value=_Resp("STATUS_WAIT_CODE")) as req:
+            self.assertIsNone(provider.wait_for_code("9001", timeout=1, poll=1))
+
+        actions = {call.args[0].get("action") for call in req.call_args_list}
+        self.assertEqual(actions, {"getStatusV2", "getStatus"})
+        self.assertFalse(
+            [call for call in req.call_args_list if call.args[0].get("status") == 3]
+        )
 
 
 class ProviderFactoryTests(unittest.TestCase):

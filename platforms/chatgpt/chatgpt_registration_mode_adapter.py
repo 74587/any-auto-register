@@ -1,8 +1,13 @@
 """ChatGPT 注册模式适配器。
 
-两种模式跑的是同一条协议链，区别只在要不要 Codex OAuth 那一段：
-``refresh_token`` 模式会额外走一次独立 authorize 链换 refresh_token，
-``access_token_only`` 模式直接跳过（省约 10 秒且不产生必然失败的告警）。
+这里有两个互相独立的维度：
+
+``mode`` 决定要不要 refresh_token —— ``refresh_token`` 模式会额外走一次独立
+authorize 链换 refresh_token，``access_token_only`` 模式直接跳过（省约 10 秒
+且不产生必然失败的告警）。
+
+``register_flow`` 决定拿什么当注册身份 —— 邮箱、接码平台的手机号，或者手机号
+注册完再把邮箱池里的地址绑上去。两个维度可以任意组合。
 """
 
 from __future__ import annotations
@@ -13,6 +18,9 @@ from typing import Callable, Optional
 from core.base_mailbox import BaseMailbox
 from core.base_platform import Account, AccountStatus
 from platforms.chatgpt.registration_engine import (
+    REGISTER_FLOW_EMAIL,
+    REGISTER_FLOW_PHONE,
+    REGISTER_FLOW_PHONE_WITH_EMAIL,
     REGISTRATION_MODE_ACCESS_TOKEN_ONLY,
     REGISTRATION_MODE_REFRESH_TOKEN,
     ChatGPTRegistrationEngine,
@@ -22,6 +30,11 @@ from platforms.chatgpt.registration_engine import (
 CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN = REGISTRATION_MODE_REFRESH_TOKEN
 CHATGPT_REGISTRATION_MODE_ACCESS_TOKEN_ONLY = REGISTRATION_MODE_ACCESS_TOKEN_ONLY
 DEFAULT_CHATGPT_REGISTRATION_MODE = CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN
+
+CHATGPT_REGISTER_FLOW_EMAIL = REGISTER_FLOW_EMAIL
+CHATGPT_REGISTER_FLOW_PHONE = REGISTER_FLOW_PHONE
+CHATGPT_REGISTER_FLOW_PHONE_WITH_EMAIL = REGISTER_FLOW_PHONE_WITH_EMAIL
+DEFAULT_CHATGPT_REGISTER_FLOW = CHATGPT_REGISTER_FLOW_EMAIL
 
 # 邮箱链路失效的特征串，命中就换下一个邮箱重试而不是把整轮判死
 _MAILBOX_ERROR_MARKERS = ("service_abuse_mode", "oauth_token_failed", "imap")
@@ -66,6 +79,25 @@ def resolve_chatgpt_registration_mode(extra: Optional[dict]) -> str:
     return DEFAULT_CHATGPT_REGISTRATION_MODE
 
 
+def normalize_chatgpt_register_flow(value) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {
+        CHATGPT_REGISTER_FLOW_PHONE_WITH_EMAIL,
+        "phone_bind_email",
+        "phone_and_email",
+        "phone_email",
+    }:
+        return CHATGPT_REGISTER_FLOW_PHONE_WITH_EMAIL
+    if normalized in {CHATGPT_REGISTER_FLOW_PHONE, "phone_number", "sms"}:
+        return CHATGPT_REGISTER_FLOW_PHONE
+    return DEFAULT_CHATGPT_REGISTER_FLOW
+
+
+def resolve_chatgpt_register_flow(extra: Optional[dict]) -> str:
+    extra = extra or {}
+    return normalize_chatgpt_register_flow(extra.get("chatgpt_register_flow"))
+
+
 @dataclass(frozen=True)
 class ChatGPTRegistrationContext:
     mailbox: BaseMailbox
@@ -80,8 +112,9 @@ class ChatGPTRegistrationContext:
 class ChatGPTRegistrationModeAdapter:
     """按模式跑注册引擎，并把结果转成平台层的 ``Account``。"""
 
-    def __init__(self, mode: str):
+    def __init__(self, mode: str, register_flow: str = DEFAULT_CHATGPT_REGISTER_FLOW):
         self.mode = mode
+        self.register_flow = register_flow
 
     def run(self, context: ChatGPTRegistrationContext) -> RegistrationResult:
         result: Optional[RegistrationResult] = None
@@ -95,6 +128,7 @@ class ChatGPTRegistrationModeAdapter:
                 extra_config=context.extra_config,
                 log_fn=context.callback_logger,
                 mailbox_kind=context.mailbox_kind,
+                register_flow=self.register_flow,
             )
             result = engine.run()
             if result.success:
@@ -131,6 +165,7 @@ class ChatGPTRegistrationModeAdapter:
             "workspace_id": result.workspace_id,
             "chatgpt_registration_mode": self.mode,
             "chatgpt_has_refresh_token_solution": self.mode == CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN,
+            "chatgpt_register_flow": self.register_flow,
             "chatgpt_token_source": result.source,
             **{k: v for k, v in (result.metadata or {}).items() if v not in (None, "", False)},
         }
@@ -139,4 +174,7 @@ class ChatGPTRegistrationModeAdapter:
 def build_chatgpt_registration_mode_adapter(
     extra: Optional[dict],
 ) -> ChatGPTRegistrationModeAdapter:
-    return ChatGPTRegistrationModeAdapter(resolve_chatgpt_registration_mode(extra))
+    return ChatGPTRegistrationModeAdapter(
+        resolve_chatgpt_registration_mode(extra),
+        resolve_chatgpt_register_flow(extra),
+    )

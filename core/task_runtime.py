@@ -27,6 +27,14 @@ class SkipCurrentAttemptRequested(TaskInterruption):
         super().__init__(message)
 
 
+class NonRetryableRegisterError(RuntimeError):
+    """重开一轮也是同样结局的失败。
+
+    典型是手机注册里"账号已建好、但接码平台一条短信都没收到"：号源被静默拦下，
+    再开一轮只会用同样的号源再造一个没人认领的孤号，还多花一次租号钱。
+    """
+
+
 class AttemptOutcome(str, Enum):
     SUCCESS = "success"
     FAILED = "failed"
@@ -38,14 +46,16 @@ class AttemptOutcome(str, Enum):
 class AttemptResult:
     outcome: AttemptOutcome
     message: str = ""
+    # 有些失败重开一轮也是同样的结局，还要再赔上一次租号和一个半成品账号
+    retryable: bool = True
 
     @classmethod
     def success(cls) -> "AttemptResult":
         return cls(AttemptOutcome.SUCCESS)
 
     @classmethod
-    def failed(cls, message: str) -> "AttemptResult":
-        return cls(AttemptOutcome.FAILED, message)
+    def failed(cls, message: str, *, retryable: bool = True) -> "AttemptResult":
+        return cls(AttemptOutcome.FAILED, message, retryable=retryable)
 
     @classmethod
     def skipped(cls, message: str) -> "AttemptResult":

@@ -16,6 +16,7 @@ CONFIG_KEYS = [
     "twocaptcha_key",
     "default_executor",
     "default_captcha_solver",
+    "register_retry_times",
     "duckmail_api_url",
     "duckmail_provider_url",
     "duckmail_bearer",

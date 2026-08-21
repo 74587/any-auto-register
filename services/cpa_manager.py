@@ -176,7 +176,12 @@ def _normalize_solver(solver: str | None) -> str:
 
 
 def _trigger_register(missing_count: int, *, config: CpaMaintenanceConfig, remaining_count: int) -> dict[str, Any]:
-    from api.tasks import RegisterTaskRequest, enqueue_register_task, has_active_register_task
+    from api.tasks import (
+        RegisterTaskRequest,
+        enqueue_register_task,
+        has_active_register_task,
+        normalize_register_retry_times,
+    )
 
     if has_active_register_task(platform="chatgpt", source=AUTO_REGISTER_SOURCE):
         print("[CPA] 已存在进行中的自动补注册任务，跳过本轮补注册")
@@ -188,6 +193,9 @@ def _trigger_register(missing_count: int, *, config: CpaMaintenanceConfig, remai
         count=missing_count,
         concurrency=config.concurrency,
         register_delay_seconds=config.register_delay_seconds,
+        register_retry_times=normalize_register_retry_times(
+            config_store.get("register_retry_times", "")
+        ),
         executor_type=_normalize_executor(config_store.get("default_executor", "protocol")),
         captcha_solver=_normalize_solver(config_store.get("default_captcha_solver", "yescaptcha")),
         extra={},

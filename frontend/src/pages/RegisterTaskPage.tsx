@@ -19,9 +19,11 @@ import {
   LoadingOutlined,
 } from '@ant-design/icons'
 import { listICloudAccounts, type ICloudAccount } from '@/api/icloud'
+import { ChatGPTRegisterFlowSelect } from '@/components/ChatGPTRegisterFlowSelect'
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
 import SmsCountrySelect from '@/components/SmsCountrySelect'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
+import { usePersistentChatGPTRegisterFlow } from '@/hooks/usePersistentChatGPTRegisterFlow'
 import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatGPTRegistrationMode'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
 import { buildChatGPTRegistrationRequestAdapter } from '@/lib/chatgptRegistrationRequestAdapter'
@@ -31,6 +33,10 @@ import {
   getPlatformMeta,
   normalizeExecutorForPlatform,
 } from '@/lib/platforms'
+import {
+  DEFAULT_REGISTER_RETRY_TIMES,
+  normalizeRegisterRetryTimes,
+} from '@/lib/registerRetry'
 import { apiFetch } from '@/lib/utils'
 
 const { Text } = Typography
@@ -47,6 +53,8 @@ export default function RegisterTaskPage() {
   const [icloudAccounts, setIcloudAccounts] = useState<ICloudAccount[]>([])
   const { mode: chatgptRegistrationMode, setMode: setChatgptRegistrationMode } =
     usePersistentChatGPTRegistrationMode()
+  const { registerFlow: chatgptRegisterFlow, setRegisterFlow: setChatgptRegisterFlow } =
+    usePersistentChatGPTRegisterFlow()
 
   useEffect(() => {
     listICloudAccounts()
@@ -62,6 +70,7 @@ export default function RegisterTaskPage() {
       form.setFieldsValue({
         executor_type: normalizeExecutorForPlatform(currentPlatform, cfg.default_executor),
         captcha_solver: cfg.default_captcha_solver || 'yescaptcha',
+        register_retry_times: normalizeRegisterRetryTimes(cfg.register_retry_times),
         mail_provider: isMailImportProvider ? 'mail_import' : configMailProvider,
         mail_import_source: configMailProvider === 'applemail' ? 'applemail' : 'microsoft',
         applemail_base_url: cfg.applemail_base_url || 'https://www.appleemail.top',
@@ -185,6 +194,7 @@ export default function RegisterTaskPage() {
       buildChatGPTRegistrationRequestAdapter(
         values.platform,
         chatgptRegistrationMode,
+        chatgptRegisterFlow,
       )
     const adaptedRegisterExtra = chatgptRegistrationRequestAdapter
       ? chatgptRegistrationRequestAdapter.extendExtra(registerExtra)
@@ -198,6 +208,7 @@ export default function RegisterTaskPage() {
         password: values.password || null,
         count: values.count,
         concurrency: values.concurrency,
+        register_retry_times: normalizeRegisterRetryTimes(values.register_retry_times),
         register_delay_seconds: values.register_delay_seconds || 0,
         proxy: values.proxy || null,
         executor_type: values.executor_type,
@@ -263,6 +274,7 @@ export default function RegisterTaskPage() {
         cloudmail_timeout: 30,
         count: 1,
         concurrency: 1,
+        register_retry_times: DEFAULT_REGISTER_RETRY_TIMES,
         register_delay_seconds: 0,
         maliapi_base_url: 'https://maliapi.215.im/v1',
         maliapi_auto_domain_strategy: 'balanced',
@@ -296,6 +308,14 @@ export default function RegisterTaskPage() {
             <Form.Item name="concurrency" label="并发数" style={{ flex: 1 }}>
               <Input type="number" min={1} />
             </Form.Item>
+            <Form.Item
+              name="register_retry_times"
+              label="失败重试轮数"
+              tooltip="整条注册流程失败后自动重开一轮：换新邮箱 / 新号码 / 新会话。0 表示失败即止；和接码里的「最多换号」不是一回事。"
+              style={{ flex: 1 }}
+            >
+              <InputNumber min={0} max={10} precision={0} style={{ width: '100%' }} placeholder="1" />
+            </Form.Item>
           </Space>
           <Space style={{ width: '100%' }}>
             <Form.Item name="register_delay_seconds" label="每个注册延迟(秒)" style={{ flex: 1 }}>
@@ -306,12 +326,20 @@ export default function RegisterTaskPage() {
             </Form.Item>
           </Space>
           {platform === 'chatgpt' && (
-            <Form.Item label="ChatGPT Token 方案">
-              <ChatGPTRegistrationModeSwitch
-                mode={chatgptRegistrationMode}
-                onChange={setChatgptRegistrationMode}
-              />
-            </Form.Item>
+            <>
+              <Form.Item label="注册方式">
+                <ChatGPTRegisterFlowSelect
+                  flow={chatgptRegisterFlow}
+                  onChange={setChatgptRegisterFlow}
+                />
+              </Form.Item>
+              <Form.Item label="ChatGPT Token 方案">
+                <ChatGPTRegistrationModeSwitch
+                  mode={chatgptRegistrationMode}
+                  onChange={setChatgptRegistrationMode}
+                />
+              </Form.Item>
+            </>
           )}
         </Card>
 
@@ -605,8 +633,9 @@ export default function RegisterTaskPage() {
         {platform === 'chatgpt' && (
           <Card title="ChatGPT 手机接码" style={{ marginBottom: 16 }}>
             <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              仅在注册链路进入 add-phone 时使用：自动租号、等短信、验证，全程无人值守。
-              平台与 API Key 在「设置 → 手机接码」里配置，这里只覆盖本次任务的参数。
+              手机注册用它拿号，邮箱注册则只在链路进入 add-phone 时用：自动租号、等短信、
+              验证，全程无人值守。平台与 API Key 在「设置 → 手机接码」里配置，这里只覆盖
+              本次任务的参数。
             </Text>
             <Form.Item name="sms_country" label="国家（可选）">
               <SmsCountrySelect placeholder="留空用设置里的默认国家" />

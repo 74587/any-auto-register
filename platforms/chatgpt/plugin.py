@@ -66,7 +66,12 @@ class ChatGPTPlatform(BasePlatform):
             )
         )
         if not result or not result.success:
-            raise RuntimeError(result.error_message if result else "注册失败")
+            message = result.error_message if result else "注册失败"
+            if result is not None and not result.retryable:
+                from core.task_runtime import NonRetryableRegisterError
+
+                raise NonRetryableRegisterError(message)
+            raise RuntimeError(message)
 
         return adapter.build_account(result, password)
 

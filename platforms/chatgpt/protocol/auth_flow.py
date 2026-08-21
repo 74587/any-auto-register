@@ -35,6 +35,8 @@ from platforms.chatgpt.protocol.fingerprint import (
 )
 from platforms.chatgpt.protocol.mail_provider import MailProvider
 from platforms.chatgpt.protocol.http_client import create_http_session, USER_AGENT
+from platforms.chatgpt.protocol.phone_flow import PhoneRegisterMixin
+from platforms.chatgpt.protocol.response_summary import describe_error
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,9 @@ class AuthResult:
         self.refresh_token: str = ""
         self.cookie_header: str = ""
         self.totp_secret: str = ""
+        # 手机号注册链路专用：账号身份是手机号，邮箱是后来绑上去的（可能没绑上）
+        self.phone_number: str = ""
+        self.bound_email: str = ""
 
     def is_valid(self) -> bool:
         return bool(self.session_token and self.access_token)
@@ -85,10 +90,12 @@ class AuthResult:
             "refresh_token": self.refresh_token,
             "cookie_header": self.cookie_header,
             "totp_secret": self.totp_secret,
+            "phone_number": self.phone_number,
+            "bound_email": self.bound_email,
         }
 
 
-class AuthFlow:
+class AuthFlow(PhoneRegisterMixin):
     """注册/登录协议流"""
 
     def __init__(
@@ -315,13 +322,13 @@ class AuthFlow:
                     set_cookie_list = [one]
             set_cookie_raw = " || ".join(set_cookie_list)
             set_cookie = set_cookie_raw[:260]
-            body = (resp.text or "").replace("\n", " ").replace("\r", " ")
-            body = body[:260]
             req_headers_lc = {(str(k).lower()): v for k, v in (req_headers or {}).items()}
 
             if self._http_trace_enabled:
+                # 控制台这行只放路由信息：响应体原文一律走 AUTH_TRACE_DUMP 的 jsonl，
+                # 倒进日志既刷屏又会把 cookie/验证码之类的东西一起摊开。
                 logger.info(
-                    "[HTTP TRACE] %s | %s %s -> %s | url=%s | location=%s | req_id=%s | ctype=%s | set_cookie=%s | body=%s",
+                    "[HTTP TRACE] %s | %s %s -> %s | url=%s | location=%s | req_id=%s | ctype=%s | set_cookie=%s",
                     step,
                     method,
                     req_url[:180],
@@ -331,7 +338,6 @@ class AuthFlow:
                     req_id,
                     ctype,
                     set_cookie,
-                    body,
                 )
                 if self._trace_include_cookie and req_cookie:
                     logger.info("[HTTP TRACE] %s | req_cookie=%s", step, req_cookie[:360])
@@ -760,7 +766,7 @@ class AuthFlow:
             },
         )
         if resp.status_code != 200:
-            logger.warning("Codex oauth/token 失败: %s - %s", resp.status_code, (resp.text or "")[:220])
+            logger.warning("Codex oauth/token 失败: %s - %s", resp.status_code, describe_error(resp.text))
             return False
         data = resp.json() if resp is not None else {}
         self.result.id_token = data.get("id_token", self.result.id_token)
@@ -904,34 +910,18 @@ class AuthFlow:
         self._trace_http("add_phone_send", resp)
 
         if resp.status_code != 200:
-            # 解析 error.message（如果有的话）
-            try:
-                data = resp.json()
-                msg = data.get("error", {}).get("message", "")
-                code = data.get("error", {}).get("code", "")
-            except Exception:
-                msg = resp.text[:150]
-                code = ""
             # 抛异常时只带 message（不带完整 JSON），让上层日志更简洁
-            raise RuntimeError(msg or f"HTTP {resp.status_code}")
+            raise RuntimeError(describe_error(resp.text) or f"HTTP {resp.status_code}")
 
         try:
             return resp.json() if resp is not None else {}
         except Exception:
             return {}
 
-    def _phone_otp_resend(self) -> bool:
-        headers = self._phone_headers("https://auth.openai.com/phone-verification")
-        resp = self.session.post(
-            "https://auth.openai.com/api/accounts/phone-otp/resend",
-            headers=headers,
-            timeout=30,
-        )
-        self._trace_http("phone_otp_resend", resp)
-        return resp.status_code == 200
-
-    def _phone_otp_validate(self, code: str) -> dict:
-        headers = self._phone_headers("https://auth.openai.com/phone-verification")
+    def _phone_otp_validate(self, code: str, referer: str = "") -> dict:
+        # 同一个接口在不同链路上的来源页不一样：绑手机是 /phone-verification，
+        # 手机号注册停在 /contact-verification，referer 对不上容易被风控盯上。
+        headers = self._phone_headers(referer or "https://auth.openai.com/phone-verification")
         resp = self.session.post(
             "https://auth.openai.com/api/accounts/phone-otp/validate",
             headers=headers,
@@ -940,7 +930,9 @@ class AuthFlow:
         )
         self._trace_http("phone_otp_validate", resp)
         if resp.status_code != 200:
-            raise RuntimeError(f"phone-otp/validate 失败: {resp.status_code} - {(resp.text or '')[:220]}")
+            raise RuntimeError(
+                f"phone-otp/validate 失败: {resp.status_code} - {describe_error(resp.text)}"
+            )
         try:
             return resp.json() if resp is not None else {}
         except Exception:
@@ -1001,14 +993,10 @@ class AuthFlow:
         """走 SMS 接码 controller：租号 → add-phone/send → 等 SMS → validate。
 
         支持平台：SmsBower（smsbower.page）。
-        单号窗口 80s（每 20s × 3 触发一次 OpenAI 端 resend）；失败自动 cancel + 换新号。
+        单号窗口 80s，窗口内只轮询接码平台收码；失败自动 cancel + 换新号。
         最多换号次数默认 3，主人可在 WebUI / 环境变量 OPENAI_PHONE_MAX_ATTEMPTS 自定义。
         """
         ctrl = self._sms_callback
-        try:
-            ctrl.set_resend_callback(self._phone_otp_resend)
-        except Exception:
-            pass
 
         # 用 try/finally 保证即使 for 循环抛异常，也能 release lock + 最后一次 cleanup
         try:
@@ -1173,7 +1161,7 @@ class AuthFlow:
             repeated_err = ""
             repeated_count = 0
 
-            # 阶段 3：等 SMS code（SmsBower 内部会按 20s × 3 调 OpenAI resend）
+            # 阶段 3：等 SMS code（窗口内只轮询接码平台，不去催发）
             phone_start = time.time()
             seen_codes: set[str] = set()
             code_attempt = 0
@@ -1276,10 +1264,6 @@ class AuthFlow:
             except Exception as e:
                 last_err = str(e)
                 logger.warning("add-phone 号码 %s 失败: %s", phone, e)
-                try:
-                    self._phone_otp_resend()
-                except Exception:
-                    pass
 
         if last_err:
             logger.warning("add-phone 阶段未成功: %s", last_err)
@@ -1774,7 +1758,7 @@ class AuthFlow:
         return csrf
 
     # ── Step 3: 获取 auth URL ──
-    def get_auth_url(self, csrf_token: str, email: str = "") -> str:
+    def get_auth_url(self, csrf_token: str, email: str = "", login_hint: str = "") -> str:
         logger.info("[2/10] 获取 OpenAI 授权地址...")
         headers = self._common_headers("https://chatgpt.com/auth/login")
         headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -1787,8 +1771,9 @@ class AuthFlow:
             "auth_session_logging_id": str(uuid.uuid4()),
             "ext-passkey-client-capabilities": "1111",
         }
-        if email:
-            query_params["login_hint"] = email
+        hint = (login_hint or email or "").strip()
+        if hint:
+            query_params["login_hint"] = hint
         signin_url = f"https://chatgpt.com/api/auth/signin/openai?{urlencode(query_params)}"
         resp = self.session.post(
             signin_url,
@@ -1924,18 +1909,24 @@ class AuthFlow:
         screen_hint: str = "signup",
         referer: str = "https://auth.openai.com/create-account",
         trace_step: str = "",
+        username_kind: str = "email",
     ) -> dict:
-        """调用 /api/accounts/authorize/continue，返回 JSON。"""
+        """调用 /api/accounts/authorize/continue，返回 JSON。
+
+        ``username_kind`` 决定这次提交的身份是邮箱还是手机号（``phone_number``），
+        服务端按它决定后面走邮件验证码还是短信验证码。
+        """
         headers = self._common_headers(referer)
         headers["Content-Type"] = "application/json"
         if sentinel_token:
             headers["openai-sentinel-token"] = sentinel_token
         if getattr(self, "_last_sentinel_so_token", ""):
             headers["openai-sentinel-so-token"] = self._last_sentinel_so_token
-        payload = {
-            "username": {"value": email, "kind": "email"},
-            "screen_hint": screen_hint,
+        payload: dict = {
+            "username": {"value": email, "kind": username_kind or "email"},
         }
+        if screen_hint:
+            payload["screen_hint"] = screen_hint
         resp = self.session.post(
             "https://auth.openai.com/api/accounts/authorize/continue",
             headers=headers,
@@ -1944,17 +1935,18 @@ class AuthFlow:
         )
         self._trace_http(trace_step or f"authorize_continue_{screen_hint}", resp)
         if resp.status_code != 200:
-            body = (resp.text or "")[:360]
+            # 服务端的原话只取 message/code：整段 JSON 换行一多就把任务日志顶爆了
+            reason = describe_error(resp.text)
             # 额外打日志：headers/req_id 帮排查是不是 IP 风控
             req_id = (resp.headers.get("x-request-id", "") or "")[:80]
             ct = (resp.headers.get("Content-Type", "") or "")[:60]
             logger.error(
-                "authorize/continue 非 200: status=%s screen_hint=%s req_id=%s content_type=%s body=%r",
-                resp.status_code, screen_hint, req_id, ct, body,
+                "authorize/continue 非 200: status=%s screen_hint=%s req_id=%s content_type=%s %s",
+                resp.status_code, screen_hint, req_id, ct, reason,
             )
             raise RuntimeError(
                 f"authorize/continue 失败(screen_hint={screen_hint}): "
-                f"HTTP {resp.status_code} req_id={req_id} body={body}"
+                f"HTTP {resp.status_code} req_id={req_id} {reason}"
             )
         try:
             return resp.json() if resp is not None else {}
@@ -2081,7 +2073,7 @@ class AuthFlow:
         )
         self._trace_http("register_password", resp)
         if resp.status_code != 200:
-            logger.warning(f"密码注册返回 {resp.status_code}: {resp.text[:200]}")
+            logger.warning(f"密码注册返回 {resp.status_code}: {describe_error(resp.text)}")
             return False
         logger.info("密码注册成功")
         # ⚠️ 走到这里 = OpenAI 侧账号连同这个密码**已经建好了**，但注册流程后面还有
@@ -2114,7 +2106,7 @@ class AuthFlow:
         )
         self._trace_http("send_email_otp", resp)
         if resp.status_code != 200:
-            raise RuntimeError(f"发送 OTP 失败: {resp.status_code} - {resp.text[:200]}")
+            raise RuntimeError(f"发送 OTP 失败: {resp.status_code} - {describe_error(resp.text)}")
         logger.info("OTP 已发送到邮箱")
 
     def send_passwordless_otp(self, referer: str = "https://auth.openai.com/create-account/password") -> bool:
@@ -2136,7 +2128,7 @@ class AuthFlow:
         if resp.status_code == 200:
             logger.info("passwordless OTP 已发送")
             return True
-        logger.warning(f"passwordless 发码失败: {resp.status_code} - {(resp.text or '')[:220]}")
+        logger.warning(f"passwordless 发码失败: {resp.status_code} - {describe_error(resp.text)}")
         return False
 
     def resend_otp(self, referer: str = "https://auth.openai.com/email-verification") -> bool:
@@ -2159,7 +2151,7 @@ class AuthFlow:
         if resp.status_code == 200:
             logger.info("OTP 已重发")
             return True
-        logger.warning(f"重发 OTP 失败: {resp.status_code} - {(resp.text or '')[:200]}")
+        logger.warning(f"重发 OTP 失败: {resp.status_code} - {describe_error(resp.text)}")
         return False
 
     def kickoff_otp_delivery(self, mode: str = "") -> bool:
@@ -2286,8 +2278,7 @@ class AuthFlow:
         )
         self._trace_http("login_password_verify", resp)
         if resp.status_code != 200:
-            body = (resp.text or "")[:260]
-            raise RuntimeError(f"密码登录失败: {resp.status_code} - {body}")
+            raise RuntimeError(f"密码登录失败: {resp.status_code} - {describe_error(resp.text)}")
         try:
             return resp.json()
         except Exception:
@@ -2319,8 +2310,7 @@ class AuthFlow:
         )
         self._trace_http("submit_mfa_totp", resp)
         if resp.status_code != 200:
-            body = (resp.text or "")[:260]
-            raise RuntimeError(f"TOTP 验证失败: {resp.status_code} - {body}")
+            raise RuntimeError(f"TOTP 验证失败: {resp.status_code} - {describe_error(resp.text)}")
         try:
             return resp.json()
         except Exception:
@@ -2339,9 +2329,7 @@ class AuthFlow:
         )
         self._trace_http("validate_email_otp", resp)
         if resp.status_code != 200:
-            body = (resp.text or "")
-            logger.warning(f"verify_otp FULL body ({resp.status_code}): {body[:2000]}")
-            raise RuntimeError(f"OTP 验证失败: {resp.status_code} - {body[:260]}")
+            raise RuntimeError(f"OTP 验证失败: {resp.status_code} - {describe_error(resp.text)}")
         logger.info("OTP 验证成功")
         try:
             return resp.json()
@@ -2386,9 +2374,9 @@ class AuthFlow:
         )
         self._trace_http("create_account", resp)
         if resp.status_code != 200:
-            body = (resp.text or "")[:500]
-            logger.error("创建账户失败: http=%s body=%s", resp.status_code, body)
-            raise RuntimeError(f"创建账户失败: {resp.status_code} - {body[:260]}")
+            reason = describe_error(resp.text)
+            logger.error("创建账户失败: http=%s %s", resp.status_code, reason)
+            raise RuntimeError(f"创建账户失败: {resp.status_code} - {reason}")
         data = resp.json()
         continue_url = data.get("continue_url", "")
 
@@ -2494,13 +2482,12 @@ class AuthFlow:
                     resp = self.session.post(url, headers=h, data=body_str, timeout=30)
                 self._trace_http(f"choose_account_try_{kind}_{url.rsplit('/', 1)[-1][:30]}", resp)
                 status = getattr(resp, "status_code", 0)
-                snippet = (getattr(resp, "text", "") or "")[:240].replace("\n", " ")
                 loc = (getattr(resp, "headers", {}) or {}).get("Location", "") or \
                       (getattr(resp, "headers", {}) or {}).get("location", "") or ""
                 # print 到 stdout 让 webui SSE 能看到每个候选的具体结果
                 print(
                     f"[choose-an-account] {method} {url} [{kind}] -> "
-                    f"status={status} loc={loc[:120]} body={snippet}",
+                    f"status={status} loc={loc[:120]} {describe_error(getattr(resp, 'text', ''))}",
                     flush=True,
                 )
                 if status in (200, 201, 302, 303):
