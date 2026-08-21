@@ -19,10 +19,12 @@ import {
   LoadingOutlined,
 } from '@ant-design/icons'
 import { listICloudAccounts, type ICloudAccount } from '@/api/icloud'
+import { ChatGPTBind2faSwitch } from '@/components/ChatGPTBind2faSwitch'
 import { ChatGPTRegisterFlowSelect } from '@/components/ChatGPTRegisterFlowSelect'
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
 import SmsCountrySelect from '@/components/SmsCountrySelect'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
+import { usePersistentChatGPTBind2fa } from '@/hooks/usePersistentChatGPTBind2fa'
 import { usePersistentChatGPTRegisterFlow } from '@/hooks/usePersistentChatGPTRegisterFlow'
 import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatGPTRegistrationMode'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
@@ -55,6 +57,8 @@ export default function RegisterTaskPage() {
     usePersistentChatGPTRegistrationMode()
   const { registerFlow: chatgptRegisterFlow, setRegisterFlow: setChatgptRegisterFlow } =
     usePersistentChatGPTRegisterFlow()
+  const { bind2fa: chatgptBind2fa, setBind2fa: setChatgptBind2fa } =
+    usePersistentChatGPTBind2fa()
 
   useEffect(() => {
     listICloudAccounts()
@@ -195,6 +199,7 @@ export default function RegisterTaskPage() {
         values.platform,
         chatgptRegistrationMode,
         chatgptRegisterFlow,
+        chatgptBind2fa,
       )
     const adaptedRegisterExtra = chatgptRegistrationRequestAdapter
       ? chatgptRegistrationRequestAdapter.extendExtra(registerExtra)
@@ -337,6 +342,12 @@ export default function RegisterTaskPage() {
                 <ChatGPTRegistrationModeSwitch
                   mode={chatgptRegistrationMode}
                   onChange={setChatgptRegistrationMode}
+                />
+              </Form.Item>
+              <Form.Item label="绑定 2FA">
+                <ChatGPTBind2faSwitch
+                  enabled={chatgptBind2fa}
+                  onChange={setChatgptBind2fa}
                 />
               </Form.Item>
             </>

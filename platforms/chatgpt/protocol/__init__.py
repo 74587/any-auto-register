@@ -19,6 +19,12 @@ from platforms.chatgpt.protocol.mail_provider import (
     MailProviderError,
     extract_otp,
 )
+from platforms.chatgpt.protocol.totp import otpauth_uri, totp_now, verify_totp
+from platforms.chatgpt.protocol.two_factor import (
+    TwoFactorBindResult,
+    bind_totp_inline,
+    bind_totp_via_login,
+)
 
 __all__ = [
     "AuthFlow",
@@ -26,5 +32,11 @@ __all__ = [
     "Config",
     "MailProvider",
     "MailProviderError",
+    "TwoFactorBindResult",
+    "bind_totp_inline",
+    "bind_totp_via_login",
     "extract_otp",
+    "otpauth_uri",
+    "totp_now",
+    "verify_totp",
 ]

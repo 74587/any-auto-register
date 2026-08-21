@@ -8,6 +8,9 @@ authorize 链换 refresh_token，``access_token_only`` 模式直接跳过（省�
 
 ``register_flow`` 决定拿什么当注册身份 —— 邮箱、接码平台的手机号，或者手机号
 注册完再把邮箱池里的地址绑上去。两个维度可以任意组合。
+
+``bind_2fa`` 是个独立开关：注册成功后顺手给账号绑一个 TOTP 双因素，密钥随号
+落库。默认关，因为绑上之后每次登录都要动态码。
 """
 
 from __future__ import annotations
@@ -98,6 +101,18 @@ def resolve_chatgpt_register_flow(extra: Optional[dict]) -> str:
     return normalize_chatgpt_register_flow(extra.get("chatgpt_register_flow"))
 
 
+def resolve_chatgpt_bind_2fa(extra: Optional[dict]) -> bool:
+    """要不要在注册成功后顺手绑 TOTP 2FA。
+
+    默认关：绑上之后这个号的每次登录都要动态码，密钥又只下发一次，丢了就再也
+    登不进去。愿意承担这个代价的人自己在任务里勾。
+    """
+    value = (extra or {}).get("chatgpt_bind_2fa")
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 @dataclass(frozen=True)
 class ChatGPTRegistrationContext:
     mailbox: BaseMailbox
@@ -112,9 +127,15 @@ class ChatGPTRegistrationContext:
 class ChatGPTRegistrationModeAdapter:
     """按模式跑注册引擎，并把结果转成平台层的 ``Account``。"""
 
-    def __init__(self, mode: str, register_flow: str = DEFAULT_CHATGPT_REGISTER_FLOW):
+    def __init__(
+        self,
+        mode: str,
+        register_flow: str = DEFAULT_CHATGPT_REGISTER_FLOW,
+        bind_2fa: bool = False,
+    ):
         self.mode = mode
         self.register_flow = register_flow
+        self.bind_2fa = bind_2fa
 
     def run(self, context: ChatGPTRegistrationContext) -> RegistrationResult:
         result: Optional[RegistrationResult] = None
@@ -129,6 +150,7 @@ class ChatGPTRegistrationModeAdapter:
                 log_fn=context.callback_logger,
                 mailbox_kind=context.mailbox_kind,
                 register_flow=self.register_flow,
+                bind_2fa=self.bind_2fa,
             )
             result = engine.run()
             if result.success:
@@ -166,6 +188,7 @@ class ChatGPTRegistrationModeAdapter:
             "chatgpt_registration_mode": self.mode,
             "chatgpt_has_refresh_token_solution": self.mode == CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN,
             "chatgpt_register_flow": self.register_flow,
+            "chatgpt_bind_2fa": self.bind_2fa,
             "chatgpt_token_source": result.source,
             **{k: v for k, v in (result.metadata or {}).items() if v not in (None, "", False)},
         }
@@ -177,4 +200,5 @@ def build_chatgpt_registration_mode_adapter(
     return ChatGPTRegistrationModeAdapter(
         resolve_chatgpt_registration_mode(extra),
         resolve_chatgpt_register_flow(extra),
+        resolve_chatgpt_bind_2fa(extra),
     )

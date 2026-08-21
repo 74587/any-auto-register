@@ -11,13 +11,11 @@ authorize 链路，verifier 攥在自己手里。
 import json
 import base64
 import hashlib
-import hmac
 import logging
 import os
 import random
 import re
 import secrets
-import struct
 import subprocess
 import time
 import uuid
@@ -37,24 +35,9 @@ from platforms.chatgpt.protocol.mail_provider import MailProvider
 from platforms.chatgpt.protocol.http_client import create_http_session, USER_AGENT
 from platforms.chatgpt.protocol.phone_flow import PhoneRegisterMixin
 from platforms.chatgpt.protocol.response_summary import describe_error
+from platforms.chatgpt.protocol.totp import totp_now as _totp_now
 
 logger = logging.getLogger(__name__)
-
-
-# ── RFC 6238 TOTP 实现（用于 mfa-challenge 计算动态码）────────────
-def _hotp(secret_b32: str, counter: int, digits: int = 6) -> str:
-    """HOTP 算法（RFC 4226）"""
-    key = base64.b32decode(secret_b32 + "=" * (-len(secret_b32) % 8))
-    msg = struct.pack(">Q", counter)
-    h = hmac.new(key, msg, hashlib.sha1).digest()
-    o = h[-1] & 0x0F
-    code = (struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
-    return str(code).zfill(digits)
-
-
-def _totp_now(secret_b32: str) -> str:
-    """当前 30 秒窗口的 6 位 TOTP 码"""
-    return _hotp(secret_b32, int(time.time()) // 30)
 
 
 class AuthResult:
