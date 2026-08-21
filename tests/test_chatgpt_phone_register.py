@@ -5,6 +5,7 @@
 """
 
 import json
+import logging
 import unittest
 from unittest import mock
 
@@ -18,6 +19,7 @@ from platforms.chatgpt.chatgpt_registration_mode_adapter import (
     resolve_chatgpt_register_flow,
 )
 from platforms.chatgpt.protocol.auth_flow import AuthFlow, AuthResult
+from platforms.chatgpt.protocol.phone_flow import PhoneAccountCreatedError
 from platforms.chatgpt.registration_engine import (
     REGISTER_FLOW_PHONE,
     REGISTER_FLOW_PHONE_WITH_EMAIL,
@@ -44,11 +46,19 @@ class _FakeSession:
         self._responses = list(responses)
         self.calls = []
 
-    def post(self, url, headers=None, json=None, timeout=None, **kwargs):
-        self.calls.append({"url": url, "headers": headers or {}, "json": json})
+    def _record(self, method, url, headers, payload):
+        self.calls.append(
+            {"method": method, "url": url, "headers": headers or {}, "json": payload}
+        )
         if not self._responses:
             raise AssertionError(f"没有为 {url} 准备响应")
         return self._responses.pop(0)
+
+    def post(self, url, headers=None, json=None, timeout=None, **kwargs):
+        return self._record("POST", url, headers, json)
+
+    def get(self, url, headers=None, timeout=None, **kwargs):
+        return self._record("GET", url, headers, None)
 
 
 def _flow(responses=()) -> AuthFlow:
@@ -232,6 +242,21 @@ class FlowStateDetectionTests(unittest.TestCase):
         )
         self.assertFalse(AuthFlow._is_phone_otp_state(page_type="email_otp_verification"))
 
+    def test_phone_otp_send_state(self):
+        self.assertTrue(AuthFlow._is_phone_otp_send_state(page_type="phone_otp_send"))
+        self.assertTrue(
+            AuthFlow._is_phone_otp_send_state(continue_url="/api/accounts/phone-otp/send")
+        )
+        # 已经在验证页上就不该再被当成"该发码了"
+        self.assertFalse(AuthFlow._is_phone_otp_send_state(page_type="phone_otp_verification"))
+
+    def test_forward_state(self):
+        self.assertTrue(AuthFlow._is_forward_state(page_type="about_you"))
+        self.assertTrue(
+            AuthFlow._is_forward_state(continue_url="https://auth.openai.com/about-you")
+        )
+        self.assertFalse(AuthFlow._is_forward_state(page_type="phone_otp_send"))
+
     def test_existing_identity_state(self):
         self.assertTrue(AuthFlow._is_existing_identity_state(page_type="login_password"))
         self.assertTrue(
@@ -360,22 +385,149 @@ class PhoneRegisterLoopTests(unittest.TestCase):
         self.assertEqual(flow.result.phone_number, ctrl.rented[0])
         self.assertEqual(ctrl.successes, 1)
 
-    def test_server_skipping_the_password_page_still_triggers_the_sms(self):
+    def test_register_response_asking_for_a_send_triggers_the_sms(self):
+        """user/register 之后服务端停在 phone_otp_send，要客户端自己去打发码接口。
+
+        线上第一次实跑就死在这：当时把这个状态当成"没进短信页"，转头去打
+        add-phone/send，被判 invalid authorization step —— 那是另一个步骤。
+        """
         ctrl = _FakeController()
         flow = _loop_flow()
-        flow.phone_authorize_continue = lambda phone, sentinel: {"page": {"type": "about_you"}}
+        flow.phone_authorize_continue = lambda phone, sentinel: {
+            "page": {"type": "create_account_password"}
+        }
+        flow.phone_register_user = lambda phone: {
+            "page": {"type": "phone_otp_send"},
+            "continue_url": "/api/accounts/phone-otp/send",
+        }
         sent = []
 
-        def _add_phone_send(phone):
-            sent.append(phone)
+        def _send(phone, continue_url=""):
+            sent.append((phone, continue_url))
             return {"page": {"type": "phone_otp_verification"}}
 
-        flow._add_phone_send = _add_phone_send
+        flow.send_phone_otp = _send
         flow._phone_otp_validate = lambda code: {"continue_url": "https://auth.openai.com/about-you"}
 
-        flow._do_phone_register_loop(ctrl)
+        continue_url, _auth_url = flow._do_phone_register_loop(ctrl)
 
-        self.assertEqual(sent, [ctrl.rented[0]])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], ctrl.rented[0])
+        self.assertIn("phone-otp/send", sent[0][1])
+        self.assertEqual(continue_url, "https://auth.openai.com/about-you")
+
+    def test_server_forwarding_past_verification_does_not_send_another_code(self):
+        ctrl = _FakeController()
+        flow = _loop_flow()
+        flow.phone_authorize_continue = lambda phone, sentinel: {
+            "page": {"type": "create_account_password"}
+        }
+        flow.phone_register_user = lambda phone: {
+            "continue_url": "https://auth.openai.com/about-you"
+        }
+
+        def _send(phone, continue_url=""):
+            raise AssertionError("服务端已经放行，不该再发码")
+
+        flow.send_phone_otp = _send
+
+        continue_url, _auth_url = flow._do_phone_register_loop(ctrl)
+
+        self.assertEqual(continue_url, "https://auth.openai.com/about-you")
+
+    def test_created_account_stops_the_round_instead_of_renting_more(self):
+        ctrl = _FakeController(max_attempts=3)
+        flow = _loop_flow()
+        flow.phone_authorize_continue = lambda phone, sentinel: {
+            "page": {"type": "create_account_password"}
+        }
+
+        def _register(phone):
+            flow.result.password = "pw-live"
+            return {"page": {"type": "phone_otp_send"}}
+
+        flow.phone_register_user = _register
+
+        def _send(phone, continue_url=""):
+            raise RuntimeError("Invalid authorization step.")
+
+        flow.send_phone_otp = _send
+
+        with self.assertRaises(PhoneAccountCreatedError) as ctx:
+            flow._do_phone_register_loop(ctrl)
+
+        # 账号已经建好了：不换号（否则每换一个就多一个孤号），
+        # 也不把号上报成"有问题"去要退款
+        self.assertEqual(len(ctrl.rented), 1)
+        self.assertEqual(ctrl.refunds, [])
+        self.assertEqual(ctx.exception.phone, ctrl.rented[0])
+        self.assertEqual(ctx.exception.password, "pw-live")
+        self.assertIn("Invalid authorization step.", str(ctx.exception))
+        self.assertIn("pw-live", str(ctx.exception))
+
+    def test_sms_timeout_after_registration_also_stops_the_round(self):
+        ctrl = _FakeController(max_attempts=3)
+        ctrl.get_code = lambda timeout=0: ""
+        flow = _loop_flow()
+        flow.phone_authorize_continue = lambda phone, sentinel: {
+            "page": {"type": "create_account_password"}
+        }
+        flow.phone_register_user = lambda phone: {"page": {"type": "phone_otp_verification"}}
+
+        with self.assertRaises(PhoneAccountCreatedError):
+            flow._do_phone_register_loop(ctrl)
+
+        self.assertEqual(len(ctrl.rented), 1)
+
+
+class SendPhoneOtpTests(unittest.TestCase):
+    def _flow(self, responses):
+        flow = _flow(responses)
+        flow._phone_headers = lambda referer: {"Referer": referer}
+        return flow
+
+    def test_prefers_the_endpoint_the_server_pointed_at(self):
+        flow = self._flow([_FakeResponse(payload={"page": {"type": "phone_otp_verification"}})])
+
+        flow.send_phone_otp("+56971901026", "/api/accounts/phone-otp/send")
+
+        call = flow.session.calls[0]
+        self.assertEqual(call["method"], "GET")
+        self.assertEqual(call["url"], "https://auth.openai.com/api/accounts/phone-otp/send")
+
+    def test_falls_back_through_the_other_send_endpoints(self):
+        flow = self._flow([
+            _FakeResponse(status_code=405, text="method not allowed"),
+            _FakeResponse(status_code=400, text="invalid authorization step"),
+            _FakeResponse(status_code=400, text="invalid authorization step"),
+            _FakeResponse(payload={"page": {"type": "phone_otp_verification"}}),
+        ])
+
+        flow.send_phone_otp("+56971901026")
+
+        self.assertEqual(
+            [(call["method"], call["url"].rsplit("/accounts/", 1)[-1]) for call in flow.session.calls],
+            [
+                ("GET", "phone-otp/send"),
+                ("POST", "phone-otp/send"),
+                ("POST", "phone-otp/resend"),
+                ("POST", "add-phone/send"),
+            ],
+        )
+        self.assertEqual(
+            flow.session.calls[-1]["json"], {"phone_number": "+56971901026", "channel": "sms"}
+        )
+
+    def test_reports_every_endpoint_it_tried(self):
+        flow = self._flow([_FakeResponse(status_code=400, text="invalid authorization step")] * 4)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            flow.send_phone_otp("+56971901026")
+
+        message = str(ctx.exception)
+        self.assertIn("phone-otp/send", message)
+        self.assertIn("add-phone/send", message)
+        self.assertIn("invalid authorization step", message)
 
 
 class RegistrationEngineFlowDispatchTests(unittest.TestCase):
@@ -450,6 +602,38 @@ class RegistrationEngineFlowDispatchTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.email, "+56971901026")
         self.assertEqual(result.metadata["bind_email_error"], "invalid state")
+
+    def test_protocol_steps_reach_the_task_log(self):
+        """协议层的步骤要看得见，否则线上出事只能靠猜。"""
+        lines = []
+        engine = ChatGPTRegistrationEngine(
+            mailbox=object(),
+            extra_config={},
+            log_fn=lines.append,
+            register_flow=REGISTER_FLOW_PHONE,
+        )
+        engine._build_sms_callback = lambda: object()
+        auth_result = AuthResult()
+        auth_result.access_token = "at"
+        auth_result.session_token = "st"
+        flow = mock.Mock()
+        flow._bind_email_error = ""
+
+        def _run(**kwargs):
+            logging.getLogger("platforms.chatgpt.protocol.phone_flow").info(
+                "user/register 成功，服务端下一步 page=phone_otp_send"
+            )
+            return auth_result
+
+        flow.run_phone_register.side_effect = _run
+
+        with mock.patch.object(ChatGPTRegistrationEngine, "_build_flow", return_value=flow):
+            engine.run()
+
+        self.assertTrue(
+            any("phone_otp_send" in line for line in lines),
+            f"协议日志没进任务日志: {lines}",
+        )
 
     def test_phone_flow_without_sms_fails_with_a_clear_message(self):
         engine = self._engine(REGISTER_FLOW_PHONE, sms_callback=None)

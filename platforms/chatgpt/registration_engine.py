@@ -23,6 +23,7 @@ from typing import Callable, Optional
 from core.base_mailbox import BaseMailbox
 from platforms.chatgpt.protocol import AuthFlow, AuthResult, Config
 from platforms.chatgpt.protocol.mailbox_adapter import MailboxProviderAdapter
+from platforms.chatgpt.protocol_log_relay import mirror_protocol_logs
 from services.sms_service import build_phone_callback, resolve_sms_settings
 
 logger = logging.getLogger(__name__)
@@ -142,8 +143,11 @@ class ChatGPTRegistrationEngine:
         provider = self._build_mail_provider() if bind_email else None
         flow = self._build_flow(sms_callback=sms_callback)
 
+        # 手机链路的每一步都只写在协议层的 logger 上，不镜像出来的话任务日志里
+        # 只有"开始/失败"两行，出事了连服务端回的是哪个 page 都看不见。
         try:
-            result = flow.run_phone_register(mail_provider=provider, bind_email=bind_email)
+            with mirror_protocol_logs(self.log):
+                result = flow.run_phone_register(mail_provider=provider, bind_email=bind_email)
         except Exception as exc:
             return self._salvage(flow, exc)
 

@@ -78,9 +78,36 @@ class PhoneRegisterMixin:
 
     @staticmethod
     def _is_phone_otp_state(page_type: str = "", continue_url: str = "") -> bool:
+        """短信已经发出去了，可以开始等码。"""
         pt = (page_type or "").strip().lower()
         cu = (continue_url or "").strip().lower()
         return (pt == "phone_otp_verification") or ("phone-verification" in cu)
+
+    @staticmethod
+    def _is_phone_otp_send_state(page_type: str = "", continue_url: str = "") -> bool:
+        """服务端把流程停在"该发短信了"，等我们自己去打发码接口。
+
+        和邮箱注册同构：``POST user/register`` 成功后服务端切到 email_otp_send，
+        由客户端主动 ``GET /api/accounts/email-otp/send`` 才真正发出验证码。
+        手机号这条链停在 phone_otp_send 上，发码接口是 phone-otp/send —— 这时候
+        去打 add-phone/send 会被判 invalid authorization step，因为那是另一个步骤。
+        """
+        pt = (page_type or "").strip().lower()
+        cu = (continue_url or "").strip().lower()
+        return (pt == "phone_otp_send") or ("phone-otp/send" in cu)
+
+    @staticmethod
+    def _is_forward_state(page_type: str = "", continue_url: str = "") -> bool:
+        """服务端已经放行到验证之后的步骤，不该再纠结发码。"""
+        pt = (page_type or "").strip().lower()
+        cu = (continue_url or "").strip().lower()
+        return (
+            pt in ("about_you", "create_account", "add_email", "external_url", "oauth_consent")
+            or "/about-you" in cu
+            or "/add-email" in cu
+            or "/consent" in cu
+            or "/auth/callback" in cu
+        )
 
     @staticmethod
     def _is_create_password_state(page_type: str = "", continue_url: str = "") -> bool:
@@ -161,6 +188,67 @@ class PhoneRegisterMixin:
             return resp.json() or {}
         except Exception:
             return {}
+
+    def send_phone_otp(self, phone_number: str, continue_url: str = "") -> dict:
+        """让 OpenAI 把验证码发到这个号上。
+
+        走哪个接口由服务端当前停在哪一步决定，``continue_url`` 就是它给的指引。
+        指引没命中时按可能性从高到低试：phone-otp/send（注册链）→ phone-otp/resend
+        （已经发过一次）→ add-phone/send（流程停在 /add-phone 页）。每一发都记下
+        服务端的原话，全失败时一起抛出去，免得只剩一句没有上下文的报错。
+        """
+        send_url = "https://auth.openai.com/api/accounts/phone-otp/send"
+        hinted = (continue_url or "").split("?")[0].strip()
+        if hinted.startswith("/"):
+            hinted = f"https://auth.openai.com{hinted}"
+        if hinted.startswith("https://auth.openai.com/api/accounts/") and hinted.endswith("/send"):
+            send_url = hinted
+
+        payload = {"phone_number": phone_number, "channel": "sms"}
+        candidates = [
+            ("GET", send_url, None, "https://auth.openai.com/create-account/password"),
+            ("POST", send_url, payload, "https://auth.openai.com/create-account/password"),
+            (
+                "POST",
+                "https://auth.openai.com/api/accounts/phone-otp/resend",
+                None,
+                "https://auth.openai.com/phone-verification",
+            ),
+            (
+                "POST",
+                "https://auth.openai.com/api/accounts/add-phone/send",
+                payload,
+                "https://auth.openai.com/add-phone",
+            ),
+        ]
+
+        failures = []
+        for method, url, body, referer in candidates:
+            headers = self._phone_headers(referer)
+            try:
+                if method == "GET":
+                    resp = self.session.get(url, headers=headers, timeout=30)
+                else:
+                    resp = self.session.post(url, headers=headers, json=body, timeout=30)
+            except Exception as exc:
+                failures.append(f"{method} {url.rsplit('/', 2)[-2:]} 网络异常: {exc}")
+                continue
+
+            self._trace_http(f"phone_otp_send_{method.lower()}", resp)
+            if resp.status_code == 200:
+                logger.info("[手机注册] 发码成功: %s %s", method, url)
+                try:
+                    return resp.json() or {}
+                except Exception:
+                    return {}
+
+            detail = (resp.text or "")[:200]
+            failures.append(f"{method} {url} → HTTP {resp.status_code} {detail}")
+            logger.warning(
+                "[手机注册] 发码未成功: %s %s → HTTP %s %s", method, url, resp.status_code, detail
+            )
+
+        raise RuntimeError("触发短信验证码失败；" + " | ".join(failures))
 
     # ── 绑定邮箱 ──
 
@@ -370,6 +458,13 @@ class PhoneRegisterMixin:
                     pass
                 self._cleanup_phone(ctrl)
                 continue
+            except PhoneAccountCreatedError as exc:
+                # 账号已经建好了，换号只会再造一个孤号。这里既不上报"号码有问题"
+                # （号码是好的，退款理由不成立），也不再往下试。
+                logger.warning(
+                    "[手机注册] 账号已在 OpenAI 侧创建但后续步骤失败，停止换号: %s", exc
+                )
+                raise
             except _PhoneFlowBroken as exc:
                 logger.warning(
                     "[手机注册] 服务端流程状态已失效（%s）：这不是号码问题，本轮到此为止",
@@ -427,7 +522,12 @@ class PhoneRegisterMixin:
         per_phone_timeout: int,
         max_code_retries: int,
     ) -> tuple:
-        """单个号码的完整尝试。号本身不行就抛 ``_PhoneUnusable``。"""
+        """单个号码的完整尝试。
+
+        号本身不行就抛 ``_PhoneUnusable``（换下一个）；``user/register`` 一旦成功，
+        这个号在 OpenAI 那边就已经是一个真账号了，之后任何失败都改抛
+        ``PhoneAccountCreatedError`` —— 换号重试只会再造一个没人认领的孤号。
+        """
         # 每个号都重开一条 authorize 链：login_hint 带着号码，服务端状态也干净
         csrf_token = self.get_csrf_token()
         auth_url = self.get_auth_url(csrf_token, login_hint=phone)
@@ -445,38 +545,87 @@ class PhoneRegisterMixin:
 
         page_type = self._extract_page_type(data)
         continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(data))
+        logger.info(
+            "[手机注册] authorize/continue 返回 page=%s continue=%s",
+            page_type or "(empty)",
+            (continue_url or "(empty)")[:160],
+        )
 
         if self._is_existing_identity_state(page_type, continue_url):
             raise _PhoneUnusable(RuntimeError(f"手机号 {phone} 已被注册过（phone_number_already_in_use）"))
 
-        if self._is_create_password_state(page_type, continue_url):
-            register_resp = self.phone_register_user(phone)
-            page_type = self._extract_page_type(register_resp)
-            continue_url = self._normalize_continue_url(
-                self._extract_continue_url_from_step(register_resp)
+        if not self._is_create_password_state(page_type, continue_url):
+            return (
+                self._continue_after_phone_verified(
+                    phone, ctrl, per_phone_timeout, max_code_retries, page_type, continue_url
+                ),
+                auth_url,
             )
 
-        if not self._is_phone_otp_state(page_type, continue_url):
-            # 服务端没自动进短信验证页时，主动触发一次发码
-            logger.info(
-                "[手机注册] 未直接进入短信验证页 (page=%s)，主动触发 add-phone/send",
-                page_type or "(empty)",
+        register_resp = self.phone_register_user(phone)
+        page_type = self._extract_page_type(register_resp)
+        continue_url = self._normalize_continue_url(
+            self._extract_continue_url_from_step(register_resp)
+        )
+        logger.info(
+            "[手机注册] user/register 成功，服务端下一步 page=%s continue=%s",
+            page_type or "(empty)",
+            (continue_url or "(empty)")[:160],
+        )
+
+        # 过了这一行，账号已经存在于 OpenAI，密码也已经回调落盘
+        try:
+            return (
+                self._continue_after_phone_verified(
+                    phone, ctrl, per_phone_timeout, max_code_retries, page_type, continue_url
+                ),
+                auth_url,
             )
-            try:
-                send_resp = self._add_phone_send(phone)
-            except Exception as exc:
-                if is_phone_rejected_error(str(exc)):
-                    raise _PhoneUnusable(exc)
-                if is_flow_state_error(str(exc)):
-                    raise _PhoneFlowBroken(exc)
-                raise
-            page_type = self._extract_page_type(send_resp)
-            continue_url = self._normalize_continue_url(
+        except PhoneAccountCreatedError:
+            raise
+        except Exception as exc:
+            cause = getattr(exc, "cause", exc)
+            raise PhoneAccountCreatedError(
+                str(cause), phone=phone, password=self.result.password
+            ) from cause
+
+    def _continue_after_phone_verified(
+        self,
+        phone: str,
+        ctrl,
+        per_phone_timeout: int,
+        max_code_retries: int,
+        page_type: str,
+        continue_url: str,
+    ) -> str:
+        """从"服务端给的下一步"推进到短信验证通过。"""
+        if self._is_forward_state(page_type, continue_url):
+            # 服务端没要求验短信就直接放行了，别再多发一条码去破坏状态
+            logger.info(
+                "[手机注册] 服务端未要求短信验证，直接进入下一步: page=%s", page_type or "(empty)"
+            )
+            return continue_url
+
+        if not self._is_phone_otp_state(page_type, continue_url):
+            if not self._is_phone_otp_send_state(page_type, continue_url):
+                logger.warning(
+                    "[手机注册] 未识别的下一步 page=%s continue=%s，按「该发码了」处理",
+                    page_type or "(empty)",
+                    (continue_url or "(empty)")[:160],
+                )
+            send_resp = self.send_phone_otp(phone, continue_url)
+            send_page = self._extract_page_type(send_resp)
+            send_continue = self._normalize_continue_url(
                 self._extract_continue_url_from_step(send_resp)
             )
-            if not self._is_phone_otp_state(page_type, continue_url):
+            if self._is_phone_otp_state(send_page, send_continue) or not send_page:
+                continue_url = send_continue or continue_url
+            elif self._is_forward_state(send_page, send_continue):
+                return send_continue
+            else:
                 raise RuntimeError(
-                    f"提交手机号后未进入短信验证页: page={page_type or '(empty)'}"
+                    f"发码后仍未进入短信验证页: page={send_page or '(empty)'} "
+                    f"continue={(send_continue or '(empty)')[:160]}"
                 )
 
         try:
@@ -484,7 +633,9 @@ class PhoneRegisterMixin:
         except Exception:
             pass
 
-        return self._wait_and_validate_sms(phone, ctrl, per_phone_timeout, max_code_retries, continue_url), auth_url
+        return self._wait_and_validate_sms(
+            phone, ctrl, per_phone_timeout, max_code_retries, continue_url
+        )
 
     def _wait_and_validate_sms(
         self,
@@ -581,6 +732,27 @@ class PhoneRegisterMixin:
 
         logger.info("手机注册流程完成!")
         return self.result
+
+
+class PhoneAccountCreatedError(RuntimeError):
+    """账号已经在 OpenAI 侧建好，但后面的步骤没走完。
+
+    这个号从此被那个账号占着，换号重试只会再造一个没人认领的孤号，所以整轮到
+    此为止。报错里带上手机号和密码：这两样是把号找回来的唯一线索。
+    """
+
+    def __init__(self, reason: str, *, phone: str, password: str = ""):
+        self.phone = phone
+        self.password = password
+        self.reason = reason
+        detail = f"手机号 {phone} 的账号已在 OpenAI 侧创建"
+        if password:
+            detail += f"（密码 {password}）"
+        super().__init__(
+            f"{detail}，但短信验证没走完：{reason}。"
+            f"这个号已被该账号占用，重试会注册出新账号；"
+            f"可以用手机号 + 密码单独登录把凭证补回来。"
+        )
 
 
 class _PhoneUnusable(Exception):
