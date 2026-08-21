@@ -3,9 +3,10 @@
 驱动 ``platforms.chatgpt.protocol`` 里的 authorize 状态机跑完整条注册链，把
 本仓库的邮箱池、接码配置、任务日志接到协议层的三个注入点上：
 
-    mail_provider   邮箱适配器，负责要地址、等 6 位邮件验证码
-    sms_callback    接码控制器，命中 add-phone 时自动租号收短信
-    on_password     密码一在 OpenAI 侧生效就回调，避免中途失败把号跑丢
+    mail_provider     邮箱适配器，负责要地址、等 6 位邮件验证码
+    sms_callback      接码控制器，命中 add-phone 时自动租号收短信
+    on_password       密码一在 OpenAI 侧生效就回调，避免中途失败把号跑丢
+    on_session_ready  session 一到手就回调，开了 2FA 绑定时用来插入 enroll
 
 协议层不认识本仓库的任何东西（config_store、任务运行时、账号表都不认识），
 所有环境相关的开关都通过 ``env_overrides`` 以实例级配置传进去，进程环境变量
@@ -23,6 +24,11 @@ from typing import Callable, Optional
 from core.base_mailbox import BaseMailbox
 from platforms.chatgpt.protocol import AuthFlow, AuthResult, Config
 from platforms.chatgpt.protocol.mailbox_adapter import MailboxProviderAdapter
+from platforms.chatgpt.protocol.two_factor import (
+    TwoFactorBindResult,
+    bind_totp_inline,
+    bind_totp_via_login,
+)
 from platforms.chatgpt.protocol_log_relay import mirror_protocol_logs
 from services.sms_service import build_phone_callback, resolve_sms_settings
 
@@ -102,6 +108,7 @@ class ChatGPTRegistrationEngine:
         log_fn: Optional[Callable[[str], None]] = None,
         mailbox_kind: str = "mailbox",
         register_flow: str = REGISTER_FLOW_EMAIL,
+        bind_2fa: bool = False,
     ):
         self.mailbox = mailbox
         self.mode = mode
@@ -112,7 +119,9 @@ class ChatGPTRegistrationEngine:
         self.log = log_fn or logger.info
         self.mailbox_kind = mailbox_kind
         self.register_flow = register_flow or REGISTER_FLOW_EMAIL
+        self.bind_2fa = bool(bind_2fa)
         self.flow: Optional[AuthFlow] = None
+        self.two_factor: Optional[TwoFactorBindResult] = None
 
     def run(self) -> RegistrationResult:
         if self.register_flow in (REGISTER_FLOW_PHONE, REGISTER_FLOW_PHONE_WITH_EMAIL):
@@ -128,7 +137,8 @@ class ChatGPTRegistrationEngine:
         except Exception as exc:
             return self._salvage(flow, exc)
 
-        return RegistrationResult.from_auth_result(result)
+        self._ensure_two_factor(flow, provider)
+        return self._attach_two_factor(RegistrationResult.from_auth_result(result))
 
     def _run_phone(self) -> RegistrationResult:
         """手机号注册。邮箱只在「手机注册 + 绑定邮箱」模式下才会去池子里领。"""
@@ -153,7 +163,10 @@ class ChatGPTRegistrationEngine:
         except Exception as exc:
             return self._salvage(flow, exc)
 
-        registration = RegistrationResult.from_auth_result(result, source="phone_register")
+        self._ensure_two_factor(flow, provider)
+        registration = self._attach_two_factor(
+            RegistrationResult.from_auth_result(result, source="phone_register")
+        )
         bind_error = getattr(flow, "_bind_email_error", "")
         if bind_email and not registration.metadata.get("bound_email"):
             registration.metadata["bind_email_error"] = bind_error or "未绑定邮箱"
@@ -176,6 +189,8 @@ class ChatGPTRegistrationEngine:
             sms_callback=sms_callback if sms_callback is not None else self._build_sms_callback(),
             env_overrides=self._env_overrides(),
             on_password=self._on_password,
+            # 不开 2FA 就一个钩子都不挂：挂上会顺带关掉 callback 前那次 Codex 抢跑
+            on_session_ready=self._on_session_ready if self.bind_2fa else None,
         )
         self.flow = flow
         return flow
@@ -191,6 +206,65 @@ class ChatGPTRegistrationEngine:
         """
         self.password = password
         self.log(f"密码已在 OpenAI 侧生效: {email} / {password}")
+
+    def _on_session_ready(self, flow: AuthFlow, access_token: str) -> None:
+        """session 一到手就绑 2FA（Codex 授权之前）。
+
+        这是快路径：注册链几十秒前刚做完验证，服务端认这是"最近认证过"，直接
+        enroll 就行，不用重跑登录链、不用再收一封邮件。
+        """
+        self.log("绑定 2FA：复用注册会话直接申请 TOTP 密钥…")
+        self._record_two_factor(bind_totp_inline(flow, access_token))
+
+    def _ensure_two_factor(self, flow: AuthFlow, mail_provider: Optional[MailboxProviderAdapter]) -> None:
+        """快路径没绑上时回落到重新登录再绑。
+
+        慢路径要一次 PoW、可能还要一封验证码邮件，所以只在真有必要时跑：号已经
+        绑过、或者身份是手机号（登录链认邮箱）都直接跳过。
+        """
+        if not self.bind_2fa:
+            return
+        if flow.result.totp_secret or (self.two_factor and self.two_factor.already_bound):
+            return
+
+        email = (getattr(flow.result, "bound_email", "") or flow.result.email or "").strip()
+        password = (flow.result.password or self.password or "").strip()
+        if "@" not in email:
+            self.log("绑定 2FA：账号没有邮箱身份，无法重新登录补绑")
+            return
+        if not password:
+            self.log("绑定 2FA：没有密码，无法重新登录补绑")
+            return
+
+        self.log("绑定 2FA：快路径没成，改走重新登录再绑（会多花一次 PoW，可能要收一封验证码）…")
+        result = bind_totp_via_login(
+            Config(proxy=self.proxy),
+            email,
+            password,
+            mail_provider=mail_provider,
+            env_overrides=self._env_overrides(),
+        )
+        self._record_two_factor(result)
+        if result.secret:
+            flow.result.totp_secret = result.secret
+
+    def _record_two_factor(self, result: TwoFactorBindResult) -> None:
+        self.two_factor = result
+        if result.ok:
+            # 密钥只下发这一次，任务日志是用户导入验证器的唯一途径
+            self.log(f"2FA 绑定成功，TOTP 密钥: {result.secret}")
+        else:
+            self.log(f"绑定 2FA：{result.summary()}")
+
+    def _attach_two_factor(self, registration: RegistrationResult) -> RegistrationResult:
+        """把绑定结果记进 metadata，账号表里能看出这号试过没、成没成。"""
+        if self.two_factor is None:
+            return registration
+        registration.metadata["chatgpt_2fa"] = {
+            "bound": self.two_factor.ok or self.two_factor.already_bound,
+            "message": self.two_factor.summary(),
+        }
+        return registration
 
     def _build_sms_callback(self):
         settings = resolve_sms_settings(self.extra_config)

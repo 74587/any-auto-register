@@ -82,6 +82,7 @@ class ChatGPTPlatform(BasePlatform):
             {"id": "sync_cliproxyapi_status", "label": "同步 CLIProxyAPI 状态", "params": []},
             {"id": "refresh_token", "label": "刷新 Token", "params": []},
             {"id": "backfill_refresh_token", "label": "补 RT", "params": []},
+            {"id": "bind_2fa", "label": "绑定 2FA", "params": []},
             {
                 "id": "payment_link",
                 "label": "生成支付链接",
@@ -235,6 +236,28 @@ class ChatGPTPlatform(BasePlatform):
                 "ok": result.success,
                 "data": {"message": result.summary(), "strategy": result.strategy},
                 "error": "" if result.success else result.summary(),
+                "account_extra_patch": build_extra_patch(result),
+            }
+
+        if action_id == "bind_2fa":
+            from services.chatgpt_two_factor import bind_account_two_factor, build_extra_patch
+
+            result = bind_account_two_factor(
+                email=account.email,
+                password=account.password,
+                extra=extra,
+                token=account.token,
+                config=(self.config.extra or {}) if self.config else {},
+                proxy=proxy,
+                allow_login=str(params.get("allow_login", "1")).lower() not in ("0", "false", "no"),
+                log_fn=getattr(self, "_log_fn", None),
+            )
+            ok = result.ok or result.already_bound
+            return {
+                "ok": ok,
+                # 密钥只下发这一次，返回给前端让用户当场导入验证器
+                "data": {"message": result.summary(), "totp_secret": result.secret},
+                "error": "" if ok else result.summary(),
                 "account_extra_patch": build_extra_patch(result),
             }
 
