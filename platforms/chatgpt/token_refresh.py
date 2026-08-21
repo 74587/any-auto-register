@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 
 from curl_cffi import requests as cffi_requests
 
+from platforms.chatgpt.protocol.response_summary import describe_error
+
 # from ..config.settings import get_settings  # removed: external dep
 # from ..database.session import get_db  # removed: external dep
 # from ..database import crud  # removed: external dep
@@ -172,7 +174,7 @@ class TokenRefreshManager:
 
             if response.status_code != 200:
                 result.error_message = f"OAuth token 刷新失败: HTTP {response.status_code}"
-                logger.warning(f"{result.error_message}, 响应: {response.text[:200]}")
+                logger.warning(f"{result.error_message}, 服务端说: {describe_error(response.text)}")
                 return result
 
             data = response.json()

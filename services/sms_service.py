@@ -195,6 +195,21 @@ def _cache_file() -> Path:
 SMS_STATUS_CANCELED = 8
 
 
+def _status_token(text) -> str:
+    """平台的纯文本状态本身就是一行短 token（``BAD_KEY`` 这种）。
+
+    长得不像 token 的都是错误页正文之类的响应体，日志里不需要它们 —— 丢掉。
+    """
+    if isinstance(text, dict):
+        text = text.get("message") or text.get("code") or ""
+    if not isinstance(text, str):
+        return ""
+    token = " ".join(text.split())
+    if not token or len(token) > 60 or "<" in token:
+        return ""
+    return token
+
+
 def _parse_sms_status_text(text: str) -> dict:
     text = str(text or "").strip()
     if text == "STATUS_WAIT_CODE":
@@ -207,7 +222,7 @@ def _parse_sms_status_text(text: str) -> dict:
         return {"status": "ok", "code": text.split(":", 1)[1]}
     if text == "STATUS_CANCEL":
         return {"status": "cancel"}
-    return {"status": "unknown", "raw": text}
+    return {"status": "unknown", "raw": _status_token(text)}
 
 
 def _make_sms_candidate(activation_id: str, source: str, code) -> Optional[dict]:
@@ -652,11 +667,13 @@ class SmsActivateProvider(BaseSmsProvider):
 
         if isinstance(data, str):
             return _parse_sms_status_text(data)
+        # raw 只放平台自己写在字段里的那句话（error / status_description），
+        # 响应体原文不进这个 dict —— 它最后是要被打进任务日志的。
         if not isinstance(data, dict):
-            return {"status": "unknown", "raw": raw_text[:200]}
+            return {"status": "unknown", "raw": ""}
 
         if data.get("error"):
-            return {"status": "unknown", "raw": raw_text[:200]}
+            return {"status": "unknown", "raw": _status_token(data.get("error"))}
 
         raw_status = data.get("status")
         if isinstance(raw_status, str):
@@ -666,7 +683,6 @@ class SmsActivateProvider(BaseSmsProvider):
 
         candidate = _make_sms_candidate(activation_id, "getStatusV2.code", data.get("code"))
         if candidate:
-            candidate["full_sms"] = str(data.get("full_sms") or "")
             return candidate
         for channel in ("sms", "call"):
             item = data.get(channel)
@@ -679,12 +695,8 @@ class SmsActivateProvider(BaseSmsProvider):
 
         description = str(data.get("status_description") or "").strip()
         if _safe_int(raw_status, -1) == SMS_STATUS_CANCELED:
-            return {"status": "cancel", "raw": description or raw_text[:200]}
-        return {
-            "status": "wait_code",
-            "raw": description or raw_text[:200],
-            "full_sms": str(data.get("full_sms") or ""),
-        }
+            return {"status": "cancel", "raw": description}
+        return {"status": "wait_code", "raw": description}
 
     def wait_for_code(
         self,
@@ -751,13 +763,12 @@ class SmsActivateProvider(BaseSmsProvider):
 
     @staticmethod
     def _describe_status(source: str, result: dict) -> str:
+        """只报状态和平台给的那句说明；短信正文不进日志。"""
         status = str(result.get("status") or "")
         detail = str(result.get("raw") or "").strip()
-        full_sms = str(result.get("full_sms") or "").strip()
         parts = [f"{source}={status}"]
         if detail:
             parts.append(detail[:80])
-        parts.append(f"full_sms={full_sms[:80] or 'null'}")
         return " ".join(parts)
 
     def get_code(self, activation_id: str, *, timeout: int = 180) -> str:

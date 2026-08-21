@@ -347,7 +347,7 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         self.assertEqual(result["status"], "unknown")
         self.assertIn("Bad type parameter", result["raw"])
 
-    def test_status_v2_reads_the_numeric_status_and_full_sms(self):
+    def test_status_v2_reads_the_numeric_status(self):
         provider = SmsActivateProvider(api_key="k")
         waiting = {"status": 1, "status_description": "Waiting for sms", "full_sms": None, "code": None}
         with mock.patch.object(provider, "_request", return_value=_Resp(payload=waiting)):
@@ -364,7 +364,22 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         with mock.patch.object(provider, "_request", return_value=_Resp(payload=arrived)):
             result = provider.get_status_v2("9001")
         self.assertEqual(result["code"], "246813")
-        self.assertEqual(result["full_sms"], "Your code is 246813")
+        # 短信正文只会被顺手打进日志，取码用不到它
+        self.assertNotIn("full_sms", result)
+
+    def test_status_v2_keeps_the_response_body_out_of_the_status_dict(self):
+        """状态 dict 会被打进任务日志，所以只放平台写在字段里的那句话。"""
+        provider = SmsActivateProvider(api_key="k")
+        body = '{"status":1,"status_description":"","secret":"never-log-me"}'
+        with mock.patch.object(
+            provider,
+            "_request",
+            return_value=_Resp(text=body, payload={"status": 1, "status_description": "", "secret": "never-log-me"}),
+        ):
+            result = provider.get_status_v2("9001")
+
+        self.assertEqual(result["status"], "wait_code")
+        self.assertNotIn("never-log-me", str(result))
 
     def test_status_v2_falls_back_to_plain_text(self):
         provider = SmsActivateProvider(api_key="k")
@@ -390,7 +405,6 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         waiting = {
             "status": "wait_code",
             "raw": "Waiting for sms",
-            "full_sms": "",
         }
         with mock.patch.object(provider, "get_status_v2", return_value=waiting), \
                 mock.patch.object(provider, "get_status", return_value={"status": "wait_code"}), \
@@ -400,7 +414,14 @@ class ProviderRequestTests(_IsolatedCacheMixin, unittest.TestCase):
         joined = "\n".join(logs.output)
         self.assertIn("平台始终没收到短信", joined)
         self.assertIn("Waiting for sms", joined)
-        self.assertIn("full_sms=null", joined)
+
+    def test_status_log_never_carries_the_sms_text(self):
+        """短信正文里就带着验证码，日志面板不该把它摊开。"""
+        provider = SmsActivateProvider(api_key="k")
+        line = provider._describe_status(
+            "v2", {"status": "wait_code", "raw": "Waiting for sms", "full_sms": "Your code is 246813"}
+        )
+        self.assertEqual(line, "v2=wait_code Waiting for sms")
 
     def test_waiting_only_polls_and_never_asks_for_a_resend(self):
         """等码期间只查状态：催发换不来第二条短信，只会把当前 challenge 弄坏。"""

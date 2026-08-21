@@ -322,13 +322,13 @@ class AuthFlow(PhoneRegisterMixin):
                     set_cookie_list = [one]
             set_cookie_raw = " || ".join(set_cookie_list)
             set_cookie = set_cookie_raw[:260]
-            body = (resp.text or "").replace("\n", " ").replace("\r", " ")
-            body = body[:260]
             req_headers_lc = {(str(k).lower()): v for k, v in (req_headers or {}).items()}
 
             if self._http_trace_enabled:
+                # 控制台这行只放路由信息：响应体原文一律走 AUTH_TRACE_DUMP 的 jsonl，
+                # 倒进日志既刷屏又会把 cookie/验证码之类的东西一起摊开。
                 logger.info(
-                    "[HTTP TRACE] %s | %s %s -> %s | url=%s | location=%s | req_id=%s | ctype=%s | set_cookie=%s | body=%s",
+                    "[HTTP TRACE] %s | %s %s -> %s | url=%s | location=%s | req_id=%s | ctype=%s | set_cookie=%s",
                     step,
                     method,
                     req_url[:180],
@@ -338,7 +338,6 @@ class AuthFlow(PhoneRegisterMixin):
                     req_id,
                     ctype,
                     set_cookie,
-                    body,
                 )
                 if self._trace_include_cookie and req_cookie:
                     logger.info("[HTTP TRACE] %s | req_cookie=%s", step, req_cookie[:360])

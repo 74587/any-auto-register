@@ -134,7 +134,14 @@ class PhoneIdentityRequestTests(unittest.TestCase):
         self.assertEqual(saved, [("+56971901026", flow.result.password)])
 
     def test_register_user_raises_on_non_200(self):
-        flow = _flow([_FakeResponse(status_code=400, text="invalid_username")])
+        flow = _flow(
+            [
+                _FakeResponse(
+                    status_code=400,
+                    text='{"error":{"message":"Invalid username","code":"invalid_username"}}',
+                )
+            ]
+        )
 
         with self.assertRaises(RuntimeError) as ctx:
             flow.phone_register_user("+56971901026")
@@ -647,7 +654,8 @@ class SendPhoneOtpTests(unittest.TestCase):
         self.assertNotIn('"channel"', joined)
 
     def test_reports_every_endpoint_it_tried(self):
-        flow = self._flow([_FakeResponse(status_code=400, text="invalid authorization step")] * 3)
+        body = '{"error":{"message":"invalid authorization step","code":"invalid_state"}}'
+        flow = self._flow([_FakeResponse(status_code=400, text=body)] * 3)
 
         with self.assertRaises(RuntimeError) as ctx:
             flow.send_phone_otp("+56971901026")
@@ -656,6 +664,19 @@ class SendPhoneOtpTests(unittest.TestCase):
         self.assertIn("phone-otp/send", message)
         self.assertIn("add-phone/send", message)
         self.assertIn("invalid authorization step", message)
+
+    def test_error_pages_are_summarised_instead_of_dumped(self):
+        """服务端回错误页时只说"没给 message"，别把整页 HTML 抄进日志。"""
+        html = "<html><body>502 Bad Gateway</body></html>"
+        flow = self._flow([_FakeResponse(status_code=502, text=html)] * 3)
+
+        with self.assertRaises(RuntimeError) as ctx, \
+                self.assertLogs("platforms.chatgpt.protocol.phone_flow", level="WARNING") as logs:
+            flow.send_phone_otp("+56971901026")
+
+        joined = "\n".join(logs.output) + str(ctx.exception)
+        self.assertIn("502", joined)
+        self.assertNotIn("Bad Gateway", joined)
 
 
 class PluginFailurePropagationTests(unittest.TestCase):

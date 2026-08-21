@@ -26,15 +26,24 @@ class DescribeErrorTests(unittest.TestCase):
             "Phone number already in use. Please try again. phone_number_in_use",
         )
 
-    def test_falls_back_to_a_trimmed_snippet_for_html(self):
+    def test_html_error_page_never_reaches_the_log(self):
         summary = describe_error("<html>\n  <body>502 Bad Gateway</body>\n</html>")
-        self.assertEqual(summary, "<html> <body>502 Bad Gateway</body> </html>")
+        self.assertNotIn("502 Bad Gateway", summary)
+        self.assertIn("AUTH_TRACE_DUMP", summary)
 
     def test_reads_flat_message_fields(self):
         self.assertEqual(describe_error('{"message":"nope","code":"bad_state"}'), "nope bad_state")
 
-    def test_json_without_anything_useful_degrades_to_the_raw_text(self):
-        self.assertEqual(describe_error('{"foo":"bar"}'), '{"foo":"bar"}')
+    def test_reads_the_oauth_error_description(self):
+        self.assertEqual(
+            describe_error('{"error":"invalid_grant","error_description":"token expired"}'),
+            "invalid_grant token expired",
+        )
+
+    def test_json_without_message_or_code_is_reported_as_such(self):
+        summary = describe_error('{"foo":"bar"}')
+        self.assertNotIn("bar", summary)
+        self.assertIn("AUTH_TRACE_DUMP", summary)
 
 
 class DescribePageTests(unittest.TestCase):
