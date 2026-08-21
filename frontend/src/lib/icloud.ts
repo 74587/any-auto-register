@@ -16,6 +16,33 @@ export function getICloudRegionLabel(region?: string): string {
 }
 
 /**
+ * 导出格式沿用仓库里邮箱池导入那套 `----` 分隔：
+ *   self    → 隐私邮箱----隐私邮箱（默认，粘到只认「邮箱----邮箱地址」的地方）
+ *   account → 隐私邮箱----所属主号（想知道每个别名挂在哪个 Apple ID 下时用）
+ */
+export type AliasExportMode = 'self' | 'account'
+
+export const ALIAS_EXPORT_FILENAME = 'icloud_aliases.txt'
+
+export function formatAliasExport(
+  aliases: { address: string; account_email: string }[],
+  mode: AliasExportMode = 'self',
+): string {
+  return aliases
+    .map((alias) => `${alias.address}----${mode === 'account' ? alias.account_email : alias.address}`)
+    .join('\n')
+}
+
+export function downloadTextFile(filename: string, content: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+/**
  * 隐私邮箱的免登录邮件链接：打开就是这个地址的最新一封邮件正文。
  * 链接本身就是权限，复制给谁谁都能看，所以走的是后端那串随机 share_token。
  */

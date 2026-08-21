@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   Drawer,
+  Dropdown,
   Empty,
   Form,
   Grid,
@@ -26,6 +27,8 @@ import {
 import {
   CloudOutlined,
   DeleteOutlined,
+  DownOutlined,
+  DownloadOutlined,
   InboxOutlined,
   LinkOutlined,
   LoginOutlined,
@@ -36,6 +39,7 @@ import {
   SyncOutlined,
 } from '@ant-design/icons'
 import {
+  batchDeleteICloudAliases,
   deleteICloudAccount,
   deleteICloudAlias,
   generateICloudAliases,
@@ -54,11 +58,15 @@ import {
   DEFAULT_ICLOUD_IMAP_HOST,
   DEFAULT_ICLOUD_IMAP_PORT,
   ICLOUD_HOURLY_ALIAS_LIMIT,
+  ALIAS_EXPORT_FILENAME,
   ICLOUD_REGION_OPTIONS,
   aliasMailUrl,
+  downloadTextFile,
+  formatAliasExport,
   formatDateTime,
   formatRelativeTime,
   getICloudRegionLabel,
+  type AliasExportMode,
 } from '@/lib/icloud'
 
 const { Text, Paragraph, Title } = Typography
@@ -74,6 +82,8 @@ export default function ICloudPage() {
   const [generateOpen, setGenerateOpen] = useState(false)
   const [filterAccountId, setFilterAccountId] = useState<number | undefined>()
   const [inboxAlias, setInboxAlias] = useState<ICloudAlias | null>(null)
+  const [selectedAliasIds, setSelectedAliasIds] = useState<React.Key[]>([])
+  const [batchDeleting, setBatchDeleting] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -112,6 +122,46 @@ export default function ICloudPage() {
     () => accounts.map((account) => ({ value: account.id, label: account.email })),
     [accounts],
   )
+
+  // 换主号筛选后原来选中的行已经不在表里了，留着只会误删
+  useEffect(() => {
+    setSelectedAliasIds([])
+  }, [filterAccountId])
+
+  // 没勾选就按当前筛选出来的全部算，跟账号页导出的口径一致
+  const targetAliases = useMemo(() => {
+    if (selectedAliasIds.length === 0) return aliases
+    const picked = new Set(selectedAliasIds.map(Number))
+    return aliases.filter((alias) => picked.has(alias.id))
+  }, [aliases, selectedAliasIds])
+
+  const handleBatchDelete = async () => {
+    const ids = selectedAliasIds.map(Number).filter((id) => Number.isInteger(id) && id > 0)
+    if (ids.length === 0) return
+    setBatchDeleting(true)
+    try {
+      const result = await batchDeleteICloudAliases(ids)
+      if (result.failed.length === 0) {
+        message.success(`已删除 ${result.deleted.length} 个隐私邮箱`)
+      } else {
+        message.warning(
+          `删除 ${result.deleted.length} 个，失败 ${result.failed.length} 个：${result.failed[0].message}`,
+        )
+      }
+      setSelectedAliasIds(result.failed.map((item) => item.alias_id))
+      await load()
+    } catch (error) {
+      message.error((error as Error).message)
+    } finally {
+      setBatchDeleting(false)
+    }
+  }
+
+  const exportAliases = (mode: AliasExportMode) => {
+    if (targetAliases.length === 0) return
+    downloadTextFile(ALIAS_EXPORT_FILENAME, formatAliasExport(targetAliases, mode))
+    message.success(`已导出 ${targetAliases.length} 条`)
+  }
 
   const accountColumns = [
     {
@@ -361,12 +411,47 @@ export default function ICloudPage() {
                   >
                     生成隐私邮箱
                   </Button>
+                  <Dropdown.Button
+                    icon={<DownOutlined />}
+                    disabled={targetAliases.length === 0}
+                    onClick={() => exportAliases('self')}
+                    menu={{
+                      items: [
+                        { key: 'self', label: '隐私邮箱----隐私邮箱' },
+                        { key: 'account', label: '隐私邮箱----所属主号' },
+                      ],
+                      onClick: ({ key }) => exportAliases(key as AliasExportMode),
+                    }}
+                  >
+                    <DownloadOutlined /> 导出 ({targetAliases.length})
+                  </Dropdown.Button>
+                  {selectedAliasIds.length > 0 && (
+                    <>
+                      <Popconfirm
+                        title={`删除选中的 ${selectedAliasIds.length} 个隐私邮箱`}
+                        description="会先在 iCloud 停用并删除这些地址，删除后无法恢复。"
+                        okText="删除"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={handleBatchDelete}
+                      >
+                        <Button danger icon={<DeleteOutlined />} loading={batchDeleting}>
+                          删除 {selectedAliasIds.length} 个
+                        </Button>
+                      </Popconfirm>
+                      <Text type="secondary">已选 {selectedAliasIds.length} 个</Text>
+                    </>
+                  )}
                 </Space>
                 <Table
                   rowKey="id"
                   loading={loading}
                   columns={aliasColumns}
                   dataSource={aliases}
+                  rowSelection={{
+                    selectedRowKeys: selectedAliasIds,
+                    onChange: setSelectedAliasIds,
+                  }}
                   // 列多了之后窄屏会把邮箱地址挤成三行，宁可横向滚动
                   scroll={{ x: 1380 }}
                   pagination={{ pageSize: 20, showSizeChanger: false }}
