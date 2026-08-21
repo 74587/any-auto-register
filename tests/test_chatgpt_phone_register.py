@@ -568,6 +568,19 @@ class PhoneRegisterLoopTests(unittest.TestCase):
         self.assertEqual(len(ctrl.rented), 1)
 
 
+class PhoneAccountCreatedMessageTests(unittest.TestCase):
+    def test_timeout_message_says_the_platform_never_got_anything(self):
+        """实测换国家救不了：别把人往「再换个国家试试」的坑里指。"""
+        err = PhoneAccountCreatedError(
+            "号 +66968649749 在 150s 内没收到短信", phone="+66968649749", password="pw"
+        )
+        text = str(err)
+        self.assertIn("+66968649749", text)
+        self.assertIn("pw", text)
+        self.assertIn("接码平台全程没收到任何短信", text)
+        self.assertIn("换号源", text)
+
+
 class SendPhoneOtpTests(unittest.TestCase):
     def _flow(self, responses):
         flow = _flow(responses)

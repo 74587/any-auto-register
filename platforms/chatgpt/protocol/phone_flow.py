@@ -836,7 +836,13 @@ class PhoneAccountCreatedError(RuntimeError):
             detail += f"（密码 {password}）"
         hint = ""
         if "没收到短信" in reason or "超时" in reason:
-            hint = "这个号段多半被 OpenAI 改走 WhatsApp 发码了，换 52（泰国）再试成功率高得多。"
+            # 实测（尼日利亚 19 与泰国 52 都试过）：OpenAI 收下发码请求、返回 200，
+            # 接码平台却全程 Waiting for SMS —— 短信根本没进这些虚拟号。
+            # 换国家救不了，得换号源，所以别再让人对着国家号反复烧钱。
+            hint = (
+                "接码平台全程没收到任何短信：OpenAI 受理了发码请求但没往这个虚拟号发，"
+                "接码平台的号被静默拦下是常态，换国家不一定有用，换号源/换更贵的实号池才有效。"
+            )
         super().__init__(
             f"{detail}，但短信验证没走完：{reason}。"
             f"这个号已被该账号占用，重试会注册出新账号；"

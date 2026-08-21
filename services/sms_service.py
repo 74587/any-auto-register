@@ -940,7 +940,7 @@ class PhoneCallbackController:
             self.log(
                 f"提醒: {country_label(used_country)} 不在 OpenAI 纯短信白名单（{whitelist}）；"
                 "这些号段 OpenAI 可能改用 WhatsApp 发码，会出现"
-                "「发送成功但一直等不到短信」"
+                "「发送成功但一直等不到短信」（白名单内的号也只是概率更高，不保证收得到）"
             )
         return self.activation.phone_number
 
