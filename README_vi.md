@@ -41,7 +41,7 @@ Theo mã nguồn frontend hiện tại, **các nền tảng hiển thị mặc �
 
 ## Tính năng
 
-- **Quản lý & đăng ký tài khoản đa nền tảng**: Danh sách tài khoản thống nhất, chi tiết, nhập/xuất, xóa, thao tác hàng loạt
+- **Quản lý & đăng ký tài khoản đa nền tảng**: Danh sách tài khoản thống nhất, chi tiết, nhập, xuất nhiều định dạng, xóa, thao tác hàng loạt
 - **iCloud Hide My Email**: Đăng nhập Apple ID (SRP + xác thực hai lớp, hoặc nhập cookie), tạo alias hàng loạt và xem hộp thư của alias
 - **Nhiều chế độ thực thi**: Giao thức thuần, trình duyệt không giao diện (headless), trình duyệt có giao diện (headed)
 - **Tích hợp nhiều dịch vụ email**: Tích hợp sẵn, bên thứ 3,自建 Worker Email và nhiều giải pháp khác
@@ -153,7 +153,7 @@ Trang tác vụ đăng ký và hộp thoại đăng ký ChatGPT còn có công t
 - **Đường nhanh**: dùng lại chính phiên đăng ký để xin và kích hoạt khóa bí mật. Chuỗi đăng ký vừa xác minh xong vài chục giây trước nên máy chủ vẫn xem là "vừa xác thực" — không cần đăng nhập lại, không cần thêm email, xong trong vài giây.
 - **Đường chậm**: chỉ chạy khi đường nhanh thất bại. Nó chạy lại toàn bộ chuỗi đăng nhập bằng email + mật khẩu rồi mới liên kết, tốn thêm một lần PoW và thường thêm một mã gửi qua email. Tài khoản dùng danh tính số điện thoại không có email để đăng nhập nên sẽ bỏ qua bước này.
 
-Khóa bí mật được ghi vào `totp_secret` trong `extra` của tài khoản. Chi tiết tài khoản cho phép sao chép để nhập vào app xác thực, và khóa cũng được in một lần trong nhật ký tác vụ. Tài khoản đã liên kết mang nhãn **2FA 已绑** trong danh sách.
+Khóa bí mật được lưu cùng tài khoản (`totp_secret` trong `extra`) và có thể sao chép vào app xác thực từ ba chỗ: nhãn **2FA 已绑** trong danh sách, mục **复制 2FA 密钥 (Sao chép khóa 2FA)** trong menu thao tác, và ô khóa trong chi tiết tài khoản. Hộp thoại sau khi liên kết thủ công cũng hiển thị khóa kèm nút sao chép riêng, và khóa vẫn được in một lần trong nhật ký tác vụ. Cần lấy khóa hàng loạt thì dùng định dạng xuất kiểu `email----mật khẩu----2FA`.
 
 Tài khoản cũ trong kho có thể liên kết riêng từ menu thao tác tài khoản (**绑定 2FA**), cũng thử dùng lại phiên trước rồi mới đăng nhập lại.
 
@@ -191,6 +191,25 @@ ID quốc gia, số giây chờ mỗi số và số lần đổi số tối đa 
 - **Re-upload những tài khoản không tìm thấy ở remote**
   - Re-upload auth-file không tìm thấy ở remote
   - Hỗ trợ "phạm vi lọc hiện tại" hoặc "tài khoản đã chọn hiện tại"
+
+### 7. Xuất hàng loạt nhiều định dạng
+
+Nút **导出 (Xuất)** ở góc trên bên phải danh sách tài khoản mở hộp thoại xuất: chọn phạm vi (các tài khoản đã tick, hoặc toàn bộ tài khoản khớp bộ lọc hiện tại — không phụ thuộc phân trang), chọn định dạng, xem trước rồi sao chép hoặc tải về.
+
+| Định dạng | Một dòng trông như thế nào |
+| --- | --- |
+| `email_pw` | `email----mật khẩu` |
+| `email_pw_2fa` | `email----mật khẩu----khóa 2FA` |
+| `email_pw_2fa_at` | thêm `----AccessToken` |
+| `email_pw_2fa_rt` | thêm `----RefreshToken` |
+| `email_pw_2fa_at_rt` | đủ mọi thông tin đăng nhập và gọi API trên một dòng |
+| `email_pw_2fa_phone` | thêm `----số điện thoại` |
+| `email_pw_rt` | `email----mật khẩu----RefreshToken` |
+| `email_2fa` | `email----khóa 2FA` |
+| `at` / `rt` / `totp` | mỗi dòng một token; tài khoản thiếu trường đó sẽ bị bỏ qua |
+| `csv` / `json` | đầy đủ trường, dùng cho Excel hoặc script |
+
+Trường rỗng vẫn giữ dấu phân cách (dấu cuối trong `a@b.com----pw----` không bị bỏ), nên script cắt theo `----` không bao giờ lệch cột. Danh mục định dạng nằm ở `EXPORT_FORMATS` trong `services/account_export.py`; thêm định dạng mới chỉ sửa một chỗ, dropdown ở frontend tự cập nhật.
 
 ## Hỗ trợ dịch vụ email
 

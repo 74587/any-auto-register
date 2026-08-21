@@ -41,7 +41,7 @@ Based on the current frontend code and UI, the **platforms displayed by default 
 
 ## Features
 
-- **Multi-platform Account Registration & Management**: Unified account list, details, import/export, deletion, batch operations
+- **Multi-platform Account Registration & Management**: Unified account list, details, import, multi-format export, deletion, batch operations
 - **iCloud Hide My Email**: Apple ID sign-in (SRP + two-factor auth, or cookie import), batch alias generation, and alias inbox viewing
 - **Multiple Executor Modes**: Pure protocol, headless browser, headed browser
 - **Multiple Email Service Integration**: Built-in, third-party, self-hosted Worker Email, and more
@@ -153,7 +153,7 @@ The register task page and the ChatGPT register dialog also carry a **绑定 2FA
 - **Fast path**: reuses the registration session to request and activate the secret. The chain finished its verification seconds earlier, so the server still treats it as recently authenticated — no re-login, no extra email, done in seconds.
 - **Slow path**: only runs when the fast path fails. It replays the full login chain with email + password before enrolling, which costs one more PoW and usually one more emailed code. Phone-identity accounts have no email to log in with, so they skip it.
 
-The secret lands in the account's `extra` under `totp_secret`. The account details panel offers it for copying into an authenticator app, and it is printed once in the task log. Bound accounts carry a **2FA 已绑** tag in the list.
+The secret is stored with the account (in `extra` under `totp_secret`) and can be copied into an authenticator app from three places: the **2FA 已绑** tag in the list, **复制 2FA 密钥 (Copy 2FA secret)** in the account action menu, and the secret block in the account details. The dialog shown after a manual bind also spells the secret out with its own copy button, and it is printed once in the task log. For secrets in bulk, use an export format such as `email----password----2FA`.
 
 Existing accounts can be bound one at a time from the account action menu (**绑定 2FA**), which likewise tries session reuse first and falls back to a re-login.
 
@@ -191,6 +191,25 @@ At the top of the ChatGPT platform list, there are two types of batch capabiliti
 - **Re-upload accounts not found on remote**
   - Re-upload auth-files not found on the remote
   - Supports "current filter scope" or "currently selected accounts"
+
+### 7. Multi-format Batch Export
+
+**导出 (Export)** at the top right of the account list opens the export dialog: pick the scope (checked accounts, or every account matching the current filters regardless of paging), pick a format, read the preview, then copy or download it.
+
+| Format | What one line looks like |
+| --- | --- |
+| `email_pw` | `email----password` |
+| `email_pw_2fa` | `email----password----2FA secret` |
+| `email_pw_2fa_at` | plus `----AccessToken` |
+| `email_pw_2fa_rt` | plus `----RefreshToken` |
+| `email_pw_2fa_at_rt` | every login and API credential on one line |
+| `email_pw_2fa_phone` | plus `----phone number` |
+| `email_pw_rt` | `email----password----RefreshToken` |
+| `email_2fa` | `email----2FA secret` |
+| `at` / `rt` / `totp` | one token per line; accounts without that field are skipped |
+| `csv` / `json` | every field, for Excel or scripts |
+
+Empty fields keep their separator (the trailing one in `a@b.com----pw----` is not dropped), so scripts splitting on `----` never shift columns. The catalog lives in `EXPORT_FORMATS` in `services/account_export.py`; adding a format is a one-place change and the frontend dropdown picks it up automatically.
 
 ## Email Service Support
 

@@ -32,6 +32,7 @@ import {
   SyncOutlined,
   KeyOutlined,
 } from '@ant-design/icons'
+import { AccountExportModal } from '@/components/AccountExportModal'
 import { ChatGPTBind2faSwitch } from '@/components/ChatGPTBind2faSwitch'
 import { ChatGPTRegisterFlowSelect } from '@/components/ChatGPTRegisterFlowSelect'
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
@@ -57,6 +58,9 @@ const STATUS_COLORS: Record<string, string> = {
   expired: 'warning',
   invalid: 'error',
 }
+
+// 纯前端动作，不发请求，所以不和后端的 action id 抢命名空间
+const COPY_TOTP_ACTION_ID = '__copy_totp_secret'
 
 function parseExtraJson(raw: string | undefined) {
   if (!raw) return {}
@@ -417,17 +421,27 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
   const [resultUrl, setResultUrl] = useState('')
   const [resultProbe, setResultProbe] = useState<any>(null)
   const [resultCliproxySync, setResultCliproxySync] = useState<any>(null)
+  const [resultSecret, setResultSecret] = useState('')
   const [runningActionId, setRunningActionId] = useState<string | null>(null)
   const [taskModalTitle, setTaskModalTitle] = useState('')
   const [actionTaskId, setActionTaskId] = useState<string | null>(null)
 
-  const showResult = (title: string, status: 'success' | 'error', text: string, url = '', probe: any = null, cliproxySync: any = null) => {
+  const showResult = (
+    title: string,
+    status: 'success' | 'error',
+    text: string,
+    url = '',
+    probe: any = null,
+    cliproxySync: any = null,
+    secret = '',
+  ) => {
     setResultTitle(title)
     setResultStatus(status)
     setResultText(text)
     setResultUrl(url)
     setResultProbe(probe)
     setResultCliproxySync(cliproxySync)
+    setResultSecret(secret)
     setResultOpen(true)
   }
 
@@ -465,6 +479,16 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
     const actionLabel = actions.find((item) => item.id === actionId)?.label || actionId
     const toastKey = `account-action:${acc?.id}:${actionId}`
 
+    if (actionId === COPY_TOTP_ACTION_ID) {
+      try {
+        await navigator.clipboard.writeText(acc.totpSecret)
+        message.success('2FA 密钥已复制')
+      } catch {
+        message.error('复制失败，请在账号详情里手动复制')
+      }
+      return
+    }
+
     if (actionId === 'backfill_refresh_token') {
       await runAsTask(actionLabel)
       return
@@ -488,6 +512,14 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
         return
       }
       const data = r.data || {}
+      // 绑 2FA 只在这一次响应里下发密钥，弹窗里必须能一键复制，关掉就没了
+      const secret = typeof data === 'object' && data ? String(data.totp_secret || '') : ''
+      if (secret) {
+        message.success({ content: data.message || `${actionLabel}完成`, key: toastKey })
+        showResult(actionLabel, 'success', String(data.message || '操作成功'), '', null, null, secret)
+        onRefresh()
+        return
+      }
       if (data.url || data.checkout_url || data.cashier_url) {
         const targetUrl = data.url || data.checkout_url || data.cashier_url
         message.success({ content: `${actionLabel}完成`, key: toastKey })
@@ -518,13 +550,18 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
     }
   }
 
-  const menuItems: MenuProps['items'] = actions.map((a) => ({
-    key: a.id,
-    label: runningActionId === a.id ? `${a.label}（运行中）` : a.label,
-    disabled: Boolean(runningActionId),
-  }))
+  const menuItems: MenuProps['items'] = [
+    ...(acc.totpSecret
+      ? [{ key: COPY_TOTP_ACTION_ID, label: '复制 2FA 密钥' }]
+      : []),
+    ...actions.map((a) => ({
+      key: a.id,
+      label: runningActionId === a.id ? `${a.label}（运行中）` : a.label,
+      disabled: Boolean(runningActionId),
+    })),
+  ]
 
-  if (actions.length === 0) return null
+  if (menuItems.length === 0) return null
 
   return (
     <>
@@ -592,6 +629,28 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
             <CliproxySyncSummary sync={resultCliproxySync} />
           </div>
         ) : null}
+        {resultSecret ? (
+          <div style={{ marginBottom: 12 }}>
+            <Alert
+              type="warning"
+              showIcon
+              message="TOTP 密钥只下发这一次，服务端取不回"
+              description={
+                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                  <Text
+                    style={{ fontFamily: 'monospace', fontSize: 13, wordBreak: 'break-all' }}
+                    copyable={{ text: resultSecret, tooltips: ['复制密钥', '已复制'] }}
+                  >
+                    {resultSecret}
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    已随账号存库，之后可在账号详情或列表的「2FA 已绑」标签上再复制。
+                  </Text>
+                </Space>
+              }
+            />
+          </div>
+        ) : null}
         {resultUrl ? (
           <Space direction="vertical" style={{ width: '100%' }}>
             <Text copyable={{ text: resultUrl }} style={{ wordBreak: 'break-all' }}>
@@ -637,6 +696,7 @@ export default function Accounts() {
   const [registerModalOpen, setRegisterModalOpen] = useState(false)
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [importModalOpen, setImportModalOpen] = useState(false)
+  const [exportModalOpen, setExportModalOpen] = useState(false)
   const [detailModalOpen, setDetailModalOpen] = useState(false)
   const [currentAccount, setCurrentAccount] = useState<any>(null)
 
@@ -713,6 +773,15 @@ export default function Accounts() {
     message.success('已复制')
   }
 
+  const copySecret = (label: string, text: string) => {
+    if (!text) {
+      message.warning(`该账号没有${label}`)
+      return
+    }
+    navigator.clipboard.writeText(text)
+    message.success(`${label}已复制`)
+  }
+
   const getRefreshToken = (record: any): string => {
     try {
       const extra = JSON.parse(record.extra_json || '{}')
@@ -720,42 +789,6 @@ export default function Accounts() {
     } catch {
       return ''
     }
-  }
-
-  const exportCsv = () => {
-    const quoteCsv = (value: any) => {
-      const text = value == null ? '' : String(value)
-      return `"${text.replace(/"/g, '""')}"`
-    }
-
-    const downloadCsv = (content: string) => {
-      const blob = new Blob([`\uFEFF${content}`], { type: 'text/csv;charset=utf-8;' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${currentPlatform}_accounts.csv`
-      a.click()
-      URL.revokeObjectURL(url)
-    }
-
-    const header = [
-      'email',
-      'password',
-      'status',
-      'region',
-      'cashier_url',
-      'created_at',
-      'token',
-      'refresh_token',
-    ]
-
-    const rows = accounts.map((a) =>
-      [a.email, a.password, a.status, a.region, a.cashier_url, a.created_at, a.token, getRefreshToken(a)]
-        .map(quoteCsv)
-        .join(','),
-    )
-
-    downloadCsv([header.map(quoteCsv).join(','), ...rows].join('\r\n'))
   }
 
   const handleDelete = async (id: number) => {
@@ -1239,8 +1272,16 @@ export default function Accounts() {
                   Sub2API {sub2apiMeta.label}
                 </Tag>
                 {record.totpSecret ? (
-                  <Tag color="purple" title="密钥在账号详情里，可复制导入验证器">
-                    2FA 已绑
+                  <Tag
+                    color="purple"
+                    title="点击复制 TOTP 密钥，可直接导入验证器"
+                    style={{ cursor: 'pointer', marginInlineEnd: 0 }}
+                    onClick={() => copySecret('2FA 密钥', record.totpSecret)}
+                  >
+                    <Space size={4}>
+                      2FA 已绑
+                      <CopyOutlined />
+                    </Space>
                   </Tag>
                 ) : null}
               </div>
@@ -1498,7 +1539,13 @@ export default function Accounts() {
             </Popconfirm>
           )}
           <Button icon={<UploadOutlined />} onClick={() => setImportModalOpen(true)}>导入</Button>
-          <Button icon={<DownloadOutlined />} onClick={exportCsv} disabled={accounts.length === 0}>导出</Button>
+          <Button
+            icon={<DownloadOutlined />}
+            onClick={() => setExportModalOpen(true)}
+            disabled={total === 0}
+          >
+            {selectedRowKeys.length > 0 ? `导出 (${selectedRowKeys.length})` : '导出'}
+          </Button>
           <Button icon={<PlusOutlined />} onClick={() => setAddModalOpen(true)}>新增</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setRegisterModalOpen(true)}>注册</Button>
           <Button icon={<ReloadOutlined spin={loading} />} onClick={load} />
@@ -1681,6 +1728,23 @@ export default function Accounts() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <AccountExportModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        filters={{
+          platform: currentPlatform,
+          email: search,
+          status: filterStatus,
+          plus_status: filterPlusStatus,
+          created_at_start: createdAtStart,
+          created_at_end: createdAtEnd,
+        }}
+        selectedIds={Array.from(selectedRowKeys)
+          .map((value) => Number(value))
+          .filter((value) => Number.isInteger(value) && value > 0)}
+        filteredTotal={total}
+      />
 
       <Modal
         title="批量导入"
