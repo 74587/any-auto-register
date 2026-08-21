@@ -67,7 +67,8 @@ function normalizeAccount(account: any) {
   const sub2apiSync = syncStatuses.sub2api && typeof syncStatuses.sub2api === 'object' ? syncStatuses.sub2api : {}
   const cliproxySync = syncStatuses.cliproxyapi && typeof syncStatuses.cliproxyapi === 'object' ? syncStatuses.cliproxyapi : {}
   const chatgptLocal = extra.chatgpt_local && typeof extra.chatgpt_local === 'object' ? extra.chatgpt_local : {}
-  return { ...account, extra, cpaSync, sub2apiSync, cliproxySync, chatgptLocal }
+  const plusCheck = extra.plus_check && typeof extra.plus_check === 'object' ? extra.plus_check : {}
+  return { ...account, extra, cpaSync, sub2apiSync, cliproxySync, chatgptLocal, plusCheck }
 }
 
 function formatSyncTime(value?: string) {
@@ -129,6 +130,34 @@ function codexStateMeta(state?: string) {
       return { color: 'warning', label: '探测失败' }
     default:
       return { color: 'default', label: '未探测' }
+  }
+}
+
+const PLUS_TRIAL_FILTERS = [
+  { value: 'trial_eligible', label: '可领首月免费' },
+  { value: 'plus_active', label: 'Plus 生效中' },
+  { value: 'free', label: 'Free' },
+  { value: 'banned', label: '封号' },
+  { value: 'token_invalid', label: '凭证失效' },
+  { value: 'unchecked', label: '未检测' },
+]
+
+type PlusCheck = { status?: string; message?: string; checked_at?: string }
+
+function plusTrialMeta(status?: string) {
+  switch ((status || '').toLowerCase()) {
+    case 'trial_eligible':
+      return { color: 'success', label: '可领首月免费' }
+    case 'plus_active':
+      return { color: 'processing', label: 'Plus 生效中' }
+    case 'free':
+      return { color: 'default', label: 'Free' }
+    case 'banned':
+      return { color: 'error', label: '封号' }
+    case 'token_invalid':
+      return { color: 'warning', label: '凭证失效' }
+    default:
+      return { color: 'default', label: '未检测' }
   }
 }
 
@@ -582,6 +611,7 @@ export default function Accounts() {
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
+  const [filterPlusStatus, setFilterPlusStatus] = useState('')
   const [createdAtStart, setCreatedAtStart] = useState('')
   const [createdAtEnd, setCreatedAtEnd] = useState('')
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
@@ -603,7 +633,9 @@ export default function Accounts() {
   const [registerLoading, setRegisterLoading] = useState(false)
   const [cpaSyncLoading, setCpaSyncLoading] = useState<'pending' | 'selected' | ''>('')
   const [cpaUploadLoading, setCpaUploadLoading] = useState<'all' | 'selected' | ''>('')
-  const [statusSyncLoading, setStatusSyncLoading] = useState<'probe_selected' | 'probe_all' | 'remote_selected' | 'remote_all' | ''>('')
+  const [statusSyncLoading, setStatusSyncLoading] = useState<
+    'probe_selected' | 'probe_all' | 'remote_selected' | 'remote_all' | 'plus_selected' | 'plus_all' | ''
+  >('')
   const [backfillRtModalOpen, setBackfillRtModalOpen] = useState(false)
   const [backfillRtLoading, setBackfillRtLoading] = useState(false)
   const [backfillRtTaskId, setBackfillRtTaskId] = useState<string | null>(null)
@@ -634,6 +666,7 @@ export default function Accounts() {
       const params = new URLSearchParams({ platform: currentPlatform, page: String(page), page_size: String(pageSize) })
       if (search) params.set('email', search)
       if (filterStatus) params.set('status', filterStatus)
+      if (filterPlusStatus) params.set('plus_status', filterPlusStatus)
       if (createdAtStart) params.set('created_at_start', createdAtStart)
       if (createdAtEnd) params.set('created_at_end', createdAtEnd)
       const data = await apiFetch(`/accounts?${params}`)
@@ -642,7 +675,7 @@ export default function Accounts() {
     } finally {
       setLoading(false)
     }
-  }, [currentPlatform, search, filterStatus, createdAtStart, createdAtEnd, page, pageSize])
+  }, [currentPlatform, search, filterStatus, filterPlusStatus, createdAtStart, createdAtEnd, page, pageSize])
 
   useEffect(() => {
     load()
@@ -940,6 +973,7 @@ export default function Accounts() {
     } else {
       body.pending_only = true
       if (filterStatus) body.status = filterStatus
+      if (filterPlusStatus) body.plus_status = filterPlusStatus
       if (search) body.email = search
     }
 
@@ -972,12 +1006,14 @@ export default function Accounts() {
     }
   }
 
-  const handleBatchStatusSync = async (kind: 'probe' | 'remote', scope: 'selected' | 'all') => {
+  const handleBatchStatusSync = async (kind: 'probe' | 'remote' | 'plus', scope: 'selected' | 'all') => {
     if (currentPlatform !== 'chatgpt') return
 
     const loadingKey = `${kind}_${scope}` as typeof statusSyncLoading
-    const actionId = kind === 'probe' ? 'probe_local_status' : 'sync_cliproxyapi_status'
-    const actionLabel = kind === 'probe' ? '本地状态同步' : 'CLIProxyAPI 状态同步'
+    const actionId =
+      kind === 'probe' ? 'probe_local_status' : kind === 'plus' ? 'check_plus_trial' : 'sync_cliproxyapi_status'
+    const actionLabel =
+      kind === 'probe' ? '本地状态同步' : kind === 'plus' ? 'Plus 试用检测' : 'CLIProxyAPI 状态同步'
     const scopeLabel = scope === 'selected' ? '所选账号' : '当前筛选账号'
     const toastKey = `status-sync:${loadingKey}`
 
@@ -999,6 +1035,7 @@ export default function Accounts() {
       body.all_filtered = true
       if (search) body.email = search
       if (filterStatus) body.status = filterStatus
+      if (filterPlusStatus) body.plus_status = filterPlusStatus
     }
 
     setStatusSyncLoading(loadingKey)
@@ -1050,6 +1087,7 @@ export default function Accounts() {
       body.all_filtered = true
       if (search) body.email = search
       if (filterStatus) body.status = filterStatus
+      if (filterPlusStatus) body.plus_status = filterPlusStatus
     }
 
     setCpaUploadLoading(scope)
@@ -1100,6 +1138,7 @@ export default function Accounts() {
       body.all_filtered = true
       if (search) body.email = search
       if (filterStatus) body.status = filterStatus
+      if (filterPlusStatus) body.plus_status = filterPlusStatus
     }
 
     setBackfillRtLoading(true)
@@ -1274,6 +1313,28 @@ export default function Accounts() {
         },
       },
       {
+        title: 'Plus 试用',
+        key: 'plus_check',
+        width: 140,
+        render: (_: unknown, record: { plusCheck?: PlusCheck }) => {
+          const check = record.plusCheck || {}
+          const meta = plusTrialMeta(check.status)
+          const checkedAt = formatSyncTime(check.checked_at)
+          return (
+            <div style={{ ...cellStackStyle, ...compactPanelStyle }}>
+              <Tag color={meta.color} title={check.message || ''}>
+                {meta.label}
+              </Tag>
+              {checkedAt && (
+                <Text type="secondary" style={secondaryTextStyle} ellipsis={{ tooltip: checkedAt }}>
+                  {checkedAt}
+                </Text>
+              )}
+            </div>
+          )
+        },
+      },
+      {
         title: 'CLIProxyAPI',
         key: 'cliproxy_sync',
         width: 170,
@@ -1385,6 +1446,14 @@ export default function Accounts() {
       disabled: getStatusSyncScope() === 'selected' ? selectedRowKeys.length === 0 : total === 0,
     },
     {
+      key: `plus:${getStatusSyncScope()}`,
+      label:
+        getStatusSyncScope() === 'selected'
+          ? `检测所选 Plus 试用资格 (${selectedRowKeys.length})`
+          : `检测当前筛选 Plus 试用资格 (${total})`,
+      disabled: getStatusSyncScope() === 'selected' ? selectedRowKeys.length === 0 : total === 0,
+    },
+    {
       key: `remote:${getStatusSyncScope()}`,
       label:
         getStatusSyncScope() === 'selected'
@@ -1417,6 +1486,15 @@ export default function Accounts() {
               { value: 'invalid', label: '已失效' },
             ]}
           />
+          {currentPlatform === 'chatgpt' && (
+            <Select
+              placeholder="Plus 试用"
+              allowClear
+              style={{ width: 150 }}
+              onChange={(v) => { setPage(1); setFilterPlusStatus(v || '') }}
+              options={PLUS_TRIAL_FILTERS}
+            />
+          )}
           <DatePicker
             showTime
             allowClear
@@ -1441,7 +1519,10 @@ export default function Accounts() {
               menu={{
                 items: statusSyncMenuItems,
                 onClick: ({ key }) => {
-                  const [kind, scope] = String(key).split(':') as ['probe' | 'remote', 'selected' | 'all']
+                  const [kind, scope] = String(key).split(':') as [
+                    'probe' | 'remote' | 'plus',
+                    'selected' | 'all',
+                  ]
                   handleBatchStatusSync(kind, scope)
                 },
               }}

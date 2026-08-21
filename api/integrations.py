@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 
 from core.db import AccountModel, engine
 from services.external_apps import install, list_status, start, start_all, stop, stop_all, uninstall
+from services.chatgpt_account_state import filter_accounts_by_plus_status
 from services.chatgpt_sync import backfill_chatgpt_account_to_cpa, get_cliproxy_sync_state
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
@@ -19,6 +20,7 @@ class BackfillRequest(BaseModel):
     pending_only: bool = False
     status: Optional[str] = None
     email: Optional[str] = None
+    plus_status: Optional[str] = None
 
 
 @router.get("/services")
@@ -78,6 +80,8 @@ def backfill_integrations(body: BackfillRequest):
             q = q.where(AccountModel.email.contains(body.email))
 
         rows = s.exec(q).all()
+        if body.plus_status:
+            rows = filter_accounts_by_plus_status(rows, body.plus_status)
         if body.pending_only:
             rows = [
                 row for row in rows

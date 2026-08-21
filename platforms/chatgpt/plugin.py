@@ -73,6 +73,7 @@ class ChatGPTPlatform(BasePlatform):
     def get_platform_actions(self) -> list:
         return [
             {"id": "probe_local_status", "label": "探测本地状态", "params": []},
+            {"id": "check_plus_trial", "label": "检测 Plus 试用", "params": []},
             {"id": "sync_cliproxyapi_status", "label": "同步 CLIProxyAPI 状态", "params": []},
             {"id": "refresh_token", "label": "刷新 Token", "params": []},
             {"id": "backfill_refresh_token", "label": "补 RT", "params": []},
@@ -153,6 +154,25 @@ class ChatGPTPlatform(BasePlatform):
                 "account_extra_patch": {
                     "chatgpt_local": probe_result,
                 },
+            }
+
+        if action_id == "check_plus_trial":
+            from platforms.chatgpt.status_probe import (
+                PLUS_TRIAL_INCONCLUSIVE,
+                probe_plus_trial_status,
+            )
+
+            trial = probe_plus_trial_status(a, proxy=proxy)
+            conclusive = trial["status"] not in PLUS_TRIAL_INCONCLUSIVE
+            return {
+                "ok": conclusive,
+                "data": {
+                    "message": f"Plus 试用检测完成：{trial['label']}",
+                    "plus_check": trial,
+                },
+                "error": "" if conclusive else trial.get("message") or trial["label"],
+                # 没查出结论就不落库，免得账号从"未检测"里消失、看着像查过了
+                "account_extra_patch": {"plus_check": trial} if conclusive else {},
             }
 
         if action_id == "sync_cliproxyapi_status":
