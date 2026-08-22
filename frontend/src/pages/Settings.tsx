@@ -24,6 +24,7 @@ import {
   isMailImportProvider,
   normalizeMailImportSource,
   resolveEffectiveMailProvider,
+  useStoredMailImportSource,
 } from '@/lib/mailImport'
 import { apiFetch } from '@/lib/utils'
 
@@ -1372,7 +1373,7 @@ export default function Settings() {
   const [saved, setSaved] = useState(false)
   const [activeTab, setActiveTab] = useState('register')
   const currentMailProviderRaw = String(Form.useWatch('mail_provider', form) || '')
-  const currentMailImportSource = normalizeMailImportSource(Form.useWatch('mail_import_source', form))
+  const currentMailImportSource = normalizeMailImportSource(useStoredMailImportSource(form))
   const currentMailProvider = resolveEffectiveMailProvider(currentMailProviderRaw, currentMailImportSource)
   const showFloatingSaveButton = activeTab === 'mailbox' || activeTab === 'chatgpt'
   const contentPaneRef = useRef<HTMLDivElement | null>(null)
