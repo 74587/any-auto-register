@@ -61,6 +61,7 @@ import {
   ALIAS_EXPORT_FILENAME,
   ICLOUD_REGION_OPTIONS,
   aliasMailUrl,
+  countExportableAliases,
   downloadTextFile,
   formatAliasExport,
   formatDateTime,
@@ -159,8 +160,18 @@ export default function ICloudPage() {
 
   const exportAliases = (mode: AliasExportMode) => {
     if (targetAliases.length === 0) return
+    const exportable = countExportableAliases(targetAliases, mode)
+    if (exportable === 0) {
+      message.warning('选中的隐私邮箱都还没有邮件 URL，导不出内容')
+      return
+    }
     downloadTextFile(ALIAS_EXPORT_FILENAME, formatAliasExport(targetAliases, mode))
-    message.success(`已导出 ${targetAliases.length} 条`)
+    const skipped = targetAliases.length - exportable
+    if (skipped > 0) {
+      message.warning(`已导出 ${exportable} 条，${skipped} 条没有邮件 URL 已跳过`)
+      return
+    }
+    message.success(`已导出 ${exportable} 条`)
   }
 
   const accountColumns = [
@@ -414,10 +425,10 @@ export default function ICloudPage() {
                   <Dropdown.Button
                     icon={<DownOutlined />}
                     disabled={targetAliases.length === 0}
-                    onClick={() => exportAliases('self')}
+                    onClick={() => exportAliases('mail_url')}
                     menu={{
                       items: [
-                        { key: 'self', label: '隐私邮箱----隐私邮箱' },
+                        { key: 'mail_url', label: '隐私邮箱----邮件 URL' },
                         { key: 'account', label: '隐私邮箱----所属主号' },
                       ],
                       onClick: ({ key }) => exportAliases(key as AliasExportMode),

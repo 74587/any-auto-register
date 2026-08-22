@@ -17,20 +17,46 @@ export function getICloudRegionLabel(region?: string): string {
 
 /**
  * 导出格式沿用仓库里邮箱池导入那套 `----` 分隔：
- *   self    → 隐私邮箱----隐私邮箱（默认，粘到只认「邮箱----邮箱地址」的地方）
- *   account → 隐私邮箱----所属主号（想知道每个别名挂在哪个 Apple ID 下时用）
+ *   mail_url → 隐私邮箱----邮件 URL（默认，正好是邮箱导入里 `邮箱----mailapi_url` 那一行）
+ *   account  → 隐私邮箱----所属主号（想知道每个别名挂在哪个 Apple ID 下时用）
  */
-export type AliasExportMode = 'self' | 'account'
+export type AliasExportMode = 'mail_url' | 'account'
 
 export const ALIAS_EXPORT_FILENAME = 'icloud_aliases.txt'
 
+export interface AliasExportRecord {
+  address: string
+  account_email: string
+  share_token?: string
+}
+
+/**
+ * 补 share_token 之前建的老别名没有免登录链接，这种行导不出 URL，只能整行跳过：
+ * 写一行末尾空着的 `邮箱----` 反而会让对面的导入器报格式错。
+ */
 export function formatAliasExport(
-  aliases: { address: string; account_email: string }[],
-  mode: AliasExportMode = 'self',
+  aliases: AliasExportRecord[],
+  mode: AliasExportMode = 'mail_url',
 ): string {
-  return aliases
-    .map((alias) => `${alias.address}----${mode === 'account' ? alias.account_email : alias.address}`)
-    .join('\n')
+  const lines: string[] = []
+  for (const alias of aliases) {
+    if (mode === 'account') {
+      lines.push(`${alias.address}----${alias.account_email}`)
+      continue
+    }
+    const url = aliasMailUrl(String(alias.share_token || ''))
+    if (url) lines.push(`${alias.address}----${url}`)
+  }
+  return lines.join('\n')
+}
+
+/** 导出前先算能导出几条，好在没有链接的别名被跳过时如实告诉用户。 */
+export function countExportableAliases(
+  aliases: AliasExportRecord[],
+  mode: AliasExportMode = 'mail_url',
+): number {
+  if (mode === 'account') return aliases.length
+  return aliases.filter((alias) => String(alias.share_token || '').trim()).length
 }
 
 export function downloadTextFile(filename: string, content: string): void {
