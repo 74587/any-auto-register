@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { App, Alert, Button, Card, Form, Input, InputNumber, Popconfirm, Select, Space, Switch, Table, Tag, Typography } from 'antd'
 import type { FormInstance } from 'antd'
 
-import { normalizeMailImportSource, type MailImportSource } from '@/lib/mailImport'
+import { normalizeMailImportSource, useStoredMailImportSource, type MailImportSource } from '@/lib/mailImport'
 import { apiFetch } from '@/lib/utils'
 
 type MailImportProviderType = 'applemail' | 'microsoft'
@@ -77,11 +77,14 @@ function toImportApiType(value: MailImportSelectionType): MailImportProviderType
  * 选中哪一栏只看已保存的 `mail_import_source`。以前这里按 mail_provider 加
  * luckmail 域名反推，反推路径里没有 MailAPI URL 这个分支，于是选完再回来必然
  * 变回 Outlook。
+ *
+ * 配置还没加载回来时返回 null：这时候什么都反推不出来，别急着把用户拽到 Outlook。
  */
 function resolvePreferredImportType(
   currentMailProvider: string,
   mailImportSource: string,
-): MailImportSelectionType {
+): MailImportSelectionType | null {
+  if (!mailImportSource) return null
   return normalizeMailImportSource(mailImportSource, currentMailProvider)
 }
 
@@ -181,7 +184,7 @@ function buildResultMessage(result: MailImportResult) {
 export default function MailImportPanel({ form }: MailImportPanelProps) {
   const { message } = App.useApp()
   const currentMailProvider = String(Form.useWatch('mail_provider', form) || '')
-  const currentMailImportSource = String(Form.useWatch('mail_import_source', form) || '')
+  const storedMailImportSource = useStoredMailImportSource(form)
   const watchedPoolDir = String(Form.useWatch('applemail_pool_dir', form) || 'mail')
   const watchedPoolFile = String(Form.useWatch('applemail_pool_file', form) || '')
 
@@ -209,8 +212,8 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
   const selectedApiType = selectedProvider?.apiType ?? toImportApiType(selectedType)
   const supportsAliasSplit = selectedApiType === 'microsoft'
   const preferredImportType = useMemo(
-    () => resolvePreferredImportType(currentMailProvider, currentMailImportSource),
-    [currentMailImportSource, currentMailProvider],
+    () => resolvePreferredImportType(currentMailProvider, storedMailImportSource),
+    [storedMailImportSource, currentMailProvider],
   )
   const snapshot = useMemo(
     () => filterSnapshotBySelection(rawSnapshot, selectedType),
@@ -226,7 +229,7 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
 
   /**
    * 视图选择立刻落库，不等整页「保存」。用户在这里选完 MailAPI URL 就去别的页面
-   * 是常态，只留在表单里等于没选。失败了也不打扰——表单里那份还在。
+   * 是常态，只留在表单里等于没选。
    */
   const persistImportSource = async (value: MailImportSelectionType) => {
     try {
@@ -235,7 +238,9 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
         body: JSON.stringify({ data: { mail_import_source: value } }),
       })
     } catch {
-      // 忽略：下次点保存会把整份配置一起写回去
+      // 表单里那份还在，点「保存配置」还能补上；但得说一声，否则刷新回来又变 Outlook
+      // 会看起来像界面自己乱跳
+      message.warning('这一栏没能保存，刷新后可能变回 Outlook，点一下「保存配置」再试')
     }
   }
 
@@ -247,11 +252,12 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
       const displayProviders = buildDisplayProviders(items)
       setProviders(displayProviders)
 
-      if (displayProviders.some((item) => item.type === preferredImportType)) {
-        setSelectedType(preferredImportType)
-      } else if (displayProviders.length > 0) {
-        setSelectedType(displayProviders[0].type)
-      }
+      const available = new Set(displayProviders.map((item) => item.type))
+      setSelectedType((current) => {
+        if (preferredImportType && available.has(preferredImportType)) return preferredImportType
+        if (available.has(current)) return current
+        return displayProviders[0]?.type ?? current
+      })
     } catch (error) {
       const detail = error instanceof Error ? error.message : '加载邮箱导入配置失败'
       message.error(detail)
@@ -287,7 +293,7 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
   }, [])
 
   useEffect(() => {
-    if (providerMap.has(preferredImportType)) {
+    if (preferredImportType && providerMap.has(preferredImportType)) {
       setSelectedType(preferredImportType)
     }
   }, [preferredImportType, providerMap])
