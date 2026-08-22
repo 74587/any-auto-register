@@ -20,12 +20,12 @@ import { ICLOUD_REGION_OPTIONS } from '@/lib/icloud'
 import { parseCountryIdList } from '@/lib/smsCountries'
 import SmsCountrySelect from '@/components/SmsCountrySelect'
 import MailImportPanel from '@/components/settings/MailImportPanel'
+import {
+  isMailImportProvider,
+  normalizeMailImportSource,
+  resolveEffectiveMailProvider,
+} from '@/lib/mailImport'
 import { apiFetch } from '@/lib/utils'
-
-function resolveEffectiveMailProvider(mailProvider: string, mailImportSource: string) {
-  if (mailProvider !== 'mail_import') return mailProvider
-  return mailImportSource === 'applemail' ? 'applemail' : 'microsoft'
-}
 
 const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
   mail_provider: [
@@ -1372,7 +1372,7 @@ export default function Settings() {
   const [saved, setSaved] = useState(false)
   const [activeTab, setActiveTab] = useState('register')
   const currentMailProviderRaw = String(Form.useWatch('mail_provider', form) || '')
-  const currentMailImportSource = String(Form.useWatch('mail_import_source', form) || 'microsoft')
+  const currentMailImportSource = normalizeMailImportSource(Form.useWatch('mail_import_source', form))
   const currentMailProvider = resolveEffectiveMailProvider(currentMailProviderRaw, currentMailImportSource)
   const showFloatingSaveButton = activeTab === 'mailbox' || activeTab === 'chatgpt'
   const contentPaneRef = useRef<HTMLDivElement | null>(null)
@@ -1381,7 +1381,7 @@ export default function Settings() {
   useEffect(() => {
     apiFetch('/config').then((data) => {
       const configMailProvider = String(data.mail_provider || 'luckmail')
-      const isMailImportProvider = configMailProvider === 'microsoft' || configMailProvider === 'outlook' || configMailProvider === 'applemail'
+      const usesMailImport = isMailImportProvider(configMailProvider)
       if (!data.mail_provider) {
         data.mail_provider = 'luckmail'
       }
@@ -1430,8 +1430,8 @@ export default function Settings() {
       if (!String(data.email_domain_level_count ?? '').trim()) {
         data.email_domain_level_count = 2
       }
-      data.mail_import_source = configMailProvider === 'applemail' ? 'applemail' : 'microsoft'
-      data.mail_provider = isMailImportProvider ? 'mail_import' : configMailProvider
+      data.mail_import_source = normalizeMailImportSource(data.mail_import_source, configMailProvider)
+      data.mail_provider = usesMailImport ? 'mail_import' : configMailProvider
       form.setFieldsValue(data)
     })
   }, [form])
@@ -1473,8 +1473,10 @@ export default function Settings() {
     setSaving(true)
     try {
       const values = form.getFieldsValue(true)
+      // 视图（Outlook / Hotmail / MailAPI URL / AppleMail）本身要落库，否则退出设置页
+      // 再回来只能按 mail_provider 反推，MailAPI URL 永远退回 Outlook
+      values.mail_import_source = normalizeMailImportSource(values.mail_import_source, values.mail_provider)
       values.mail_provider = resolveEffectiveMailProvider(values.mail_provider, values.mail_import_source)
-      delete values.mail_import_source
       const domains = normalizeDomainList(values.cfworker_domains)
       const enabledDomains = normalizeDomainList(values.cfworker_enabled_domains).filter((domain) => domains.includes(domain))
 
@@ -1514,8 +1516,8 @@ export default function Settings() {
 
       await apiFetch('/config', { method: 'PUT', body: JSON.stringify({ data: values }) })
       form.setFieldsValue({
-        mail_provider: values.mail_provider === 'microsoft' || values.mail_provider === 'applemail' ? 'mail_import' : values.mail_provider,
-        mail_import_source: values.mail_provider === 'applemail' ? 'applemail' : 'microsoft',
+        mail_provider: isMailImportProvider(values.mail_provider) ? 'mail_import' : values.mail_provider,
+        mail_import_source: values.mail_import_source,
         cpa_enabled: values.cpa_enabled,
         sub2api_enabled: values.sub2api_enabled,
         cfworker_domains: domains,

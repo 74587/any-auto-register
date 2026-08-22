@@ -1,7 +1,13 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from core.config_store import config_store
-from services.mail_imports import MailImportExecuteRequest, MailImportSnapshotRequest, mail_import_registry
+from services.mail_imports import (
+    MailImportExecuteRequest,
+    MailImportSnapshotRequest,
+    align_source_with_provider,
+    mail_import_registry,
+    normalize_mail_import_source,
+)
 from services.sms_service import SMS_DEFAULT_COUNTRY, SMS_DEFAULT_SERVICE
 
 router = APIRouter(prefix="/config", tags=["config"])
@@ -39,6 +45,7 @@ CONFIG_KEYS = [
     "cloudmail_subdomain",
     "cloudmail_timeout",
     "mail_provider",
+    "mail_import_source",
     "outlook_backend",
     "mailbox_otp_timeout_seconds",
     "maliapi_base_url",
@@ -136,6 +143,10 @@ def get_config():
         all_cfg["mail_provider"] = "microsoft"
     if not all_cfg.get("mail_provider"):
         all_cfg["mail_provider"] = "luckmail"
+    all_cfg["mail_import_source"] = normalize_mail_import_source(
+        all_cfg.get("mail_import_source"),
+        all_cfg.get("mail_provider"),
+    )
     if not all_cfg.get("applemail_base_url"):
         all_cfg["applemail_base_url"] = "https://www.appleemail.top"
     if not all_cfg.get("applemail_pool_dir"):
@@ -180,6 +191,14 @@ def update_config(body: ConfigUpdate):
     safe = {k: v for k, v in body.data.items() if k in CONFIG_KEYS}
     if safe.get("mail_provider") == "outlook":
         safe["mail_provider"] = "microsoft"
+    if "mail_import_source" in safe:
+        # 只有同一次请求里带了 mail_provider 才谈得上对齐；面板单独改视图时，
+        # 视图本身就是用户的新选择，不该被库里的旧 provider 拽回去
+        safe["mail_import_source"] = (
+            align_source_with_provider(safe["mail_import_source"], safe["mail_provider"])
+            if "mail_provider" in safe
+            else normalize_mail_import_source(safe["mail_import_source"])
+        )
     if "email_domain_rule_enabled" in safe:
         enabled = str(safe.get("email_domain_rule_enabled", "")).strip().lower()
         safe["email_domain_rule_enabled"] = (

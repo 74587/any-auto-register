@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { App, Alert, Button, Card, Form, Input, InputNumber, Popconfirm, Select, Space, Switch, Table, Tag, Typography } from 'antd'
 import type { FormInstance } from 'antd'
 
+import { normalizeMailImportSource, type MailImportSource } from '@/lib/mailImport'
 import { apiFetch } from '@/lib/utils'
 
 type MailImportProviderType = 'applemail' | 'microsoft'
-type MailImportSelectionType = MailImportProviderType | 'outlook' | 'hotmail' | 'mailapi'
-type MailImportFormProviderType = MailImportProviderType | 'mail_import'
+type MailImportSelectionType = MailImportSource
 
 interface MailImportPanelProps {
   form: FormInstance
@@ -64,55 +64,25 @@ interface MailImportResult {
 }
 
 const SUPPORTED_IMPORT_TYPES: MailImportProviderType[] = ['applemail', 'microsoft']
-const SUPPORTED_SELECTION_TYPES: MailImportSelectionType[] = ['applemail', 'microsoft', 'outlook', 'hotmail', 'mailapi']
 
 function isSupportedImportType(value: string): value is MailImportProviderType {
   return SUPPORTED_IMPORT_TYPES.includes(value as MailImportProviderType)
-}
-
-function isSupportedSelectionType(value: string): value is MailImportSelectionType {
-  return SUPPORTED_SELECTION_TYPES.includes(value as MailImportSelectionType)
 }
 
 function toImportApiType(value: MailImportSelectionType): MailImportProviderType {
   return value === 'applemail' ? 'applemail' : 'microsoft'
 }
 
-function resolveMicrosoftImportType(domain: string) {
-  return domain.includes('hotmail') ? 'hotmail' : 'outlook'
-}
-
+/**
+ * 选中哪一栏只看已保存的 `mail_import_source`。以前这里按 mail_provider 加
+ * luckmail 域名反推，反推路径里没有 MailAPI URL 这个分支，于是选完再回来必然
+ * 变回 Outlook。
+ */
 function resolvePreferredImportType(
   currentMailProvider: string,
   mailImportSource: string,
-  luckmailEmailType: string,
-  luckmailDomain: string,
-  applemailPoolFile: string,
 ): MailImportSelectionType {
-  if (currentMailProvider === 'mail_import') {
-    return mailImportSource === 'applemail' ? 'applemail' : resolveMicrosoftImportType(String(luckmailDomain || '').trim().toLowerCase())
-  }
-  if (currentMailProvider === 'applemail') return 'applemail'
-  if (currentMailProvider === 'microsoft' || currentMailProvider === 'outlook') {
-    return resolveMicrosoftImportType(String(luckmailDomain || '').trim().toLowerCase())
-  }
-
-  const normalizedLuckmailType = String(luckmailEmailType || '').trim().toLowerCase()
-  const normalizedLuckmailDomain = String(luckmailDomain || '').trim().toLowerCase()
-  const isMicrosoftMailbox =
-    normalizedLuckmailType.startsWith('ms_')
-    || normalizedLuckmailDomain.includes('outlook')
-    || normalizedLuckmailDomain.includes('hotmail')
-
-  if (isMicrosoftMailbox) {
-    return resolveMicrosoftImportType(normalizedLuckmailDomain)
-  }
-
-  if (String(applemailPoolFile || '').trim()) {
-    return 'applemail'
-  }
-
-  return 'outlook'
+  return normalizeMailImportSource(mailImportSource, currentMailProvider)
 }
 
 function buildDisplayProviders(providers: MailImportProviderDescriptor[]) {
@@ -210,12 +180,10 @@ function buildResultMessage(result: MailImportResult) {
 
 export default function MailImportPanel({ form }: MailImportPanelProps) {
   const { message } = App.useApp()
-  const currentMailProvider = String(Form.useWatch('mail_provider', form) || '') as MailImportFormProviderType
-  const currentMailImportSource = String(Form.useWatch('mail_import_source', form) || 'microsoft')
+  const currentMailProvider = String(Form.useWatch('mail_provider', form) || '')
+  const currentMailImportSource = String(Form.useWatch('mail_import_source', form) || '')
   const watchedPoolDir = String(Form.useWatch('applemail_pool_dir', form) || 'mail')
   const watchedPoolFile = String(Form.useWatch('applemail_pool_file', form) || '')
-  const watchedLuckmailEmailType = String(Form.useWatch('luckmail_email_type', form) || '')
-  const watchedLuckmailDomain = String(Form.useWatch('luckmail_domain', form) || '')
 
   const [providers, setProviders] = useState<MailImportDisplayProvider[]>([])
   const [selectedType, setSelectedType] = useState<MailImportSelectionType>('outlook')
@@ -241,14 +209,8 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
   const selectedApiType = selectedProvider?.apiType ?? toImportApiType(selectedType)
   const supportsAliasSplit = selectedApiType === 'microsoft'
   const preferredImportType = useMemo(
-    () => resolvePreferredImportType(
-      currentMailProvider,
-      currentMailImportSource,
-      watchedLuckmailEmailType,
-      watchedLuckmailDomain,
-      watchedPoolFile,
-    ),
-    [currentMailImportSource, currentMailProvider, watchedLuckmailDomain, watchedLuckmailEmailType, watchedPoolFile],
+    () => resolvePreferredImportType(currentMailProvider, currentMailImportSource),
+    [currentMailImportSource, currentMailProvider],
   )
   const snapshot = useMemo(
     () => filterSnapshotBySelection(rawSnapshot, selectedType),
@@ -262,6 +224,21 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
     [snapshot],
   )
 
+  /**
+   * 视图选择立刻落库，不等整页「保存」。用户在这里选完 MailAPI URL 就去别的页面
+   * 是常态，只留在表单里等于没选。失败了也不打扰——表单里那份还在。
+   */
+  const persistImportSource = async (value: MailImportSelectionType) => {
+    try {
+      await apiFetch('/config', {
+        method: 'PUT',
+        body: JSON.stringify({ data: { mail_import_source: value } }),
+      })
+    } catch {
+      // 忽略：下次点保存会把整份配置一起写回去
+    }
+  }
+
   const loadProviders = async () => {
     setLoadingProviders(true)
     try {
@@ -270,7 +247,7 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
       const displayProviders = buildDisplayProviders(items)
       setProviders(displayProviders)
 
-      if (isSupportedSelectionType(preferredImportType) && displayProviders.some((item) => item.type === preferredImportType)) {
+      if (displayProviders.some((item) => item.type === preferredImportType)) {
         setSelectedType(preferredImportType)
       } else if (displayProviders.length > 0) {
         setSelectedType(displayProviders[0].type)
@@ -367,11 +344,13 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
           applemail_pool_dir: response.snapshot.pool_dir,
           applemail_pool_file: response.snapshot.filename,
         })
+        void persistImportSource('applemail')
       } else if (response.type === 'microsoft') {
         form.setFieldsValue({
           mail_provider: 'mail_import',
-          mail_import_source: 'microsoft',
+          mail_import_source: selectedType,
         })
+        void persistImportSource(selectedType)
       }
 
       message.success(buildImportSuccessMessage(response))
@@ -387,8 +366,9 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
     setSelectedType(value)
     form.setFieldsValue({
       mail_provider: 'mail_import',
-      mail_import_source: value === 'applemail' ? 'applemail' : 'microsoft',
+      mail_import_source: value,
     })
+    void persistImportSource(value)
   }
 
   const handleDelete = async (item: MailImportSnapshotItem) => {

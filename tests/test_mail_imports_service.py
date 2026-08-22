@@ -46,6 +46,59 @@ class MailImportServiceTests(unittest.TestCase):
         self.assertEqual(record.account_type, "mailapi_url")
         self.assertEqual(record.mailapi_url, "https://mailapi.icu/key?type=html&orderNo=abc123")
 
+    def test_alias_mail_url_export_line_imports_as_mailapi_url(self):
+        """隐私邮箱导出的 `隐私邮箱----邮件 URL` 那一行，得能原样贴回邮箱导入。
+
+        导出串是前端拼的，但格式契约在这一侧：`/m/<share_token>` 这种免登录链接
+        必须被认成 mailapi_url，不然导出来的东西没地方用。
+        """
+        rules_module = load_microsoft_import_rules_module()
+        parse_microsoft_import_line = rules_module.parse_microsoft_import_line
+
+        record = parse_microsoft_import_line(
+            1,
+            "alias.sample@icloud.com----https://reg.example.com/m/y1urEDOgBNVeDE9aK5vUWA",
+        )
+
+        self.assertEqual(record.email, "alias.sample@icloud.com")
+        self.assertEqual(record.account_type, "mailapi_url")
+        self.assertEqual(
+            record.mailapi_url,
+            "https://reg.example.com/m/y1urEDOgBNVeDE9aK5vUWA",
+        )
+
+    def test_mailapi_only_batch_never_runs_the_oauth_probe(self):
+        from services.mail_imports.schemas import MailImportExecuteRequest
+        from services.mail_imports.providers import MicrosoftMailImportStrategy
+
+        strategy = MicrosoftMailImportStrategy()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_engine = create_engine(f"sqlite:///{Path(tmp_dir) / 'mailapi-only.db'}")
+            SQLModel.metadata.create_all(test_engine)
+
+            try:
+                with patch("services.mail_imports.providers.engine", test_engine), \
+                     patch("services.mail_imports.providers.OutlookMailbox") as mailbox_cls:
+                    response = strategy.execute(
+                        MailImportExecuteRequest(
+                            type="microsoft",
+                            content=(
+                                "one@icloud.com----https://reg.example.com/m/tokenone\n"
+                                "two@icloud.com----https://reg.example.com/m/tokentwo"
+                            ),
+                        )
+                    )
+
+                    mailbox_cls.assert_not_called()
+                    self.assertEqual(response.summary.success, 2)
+                    self.assertEqual(response.summary.failed, 0)
+                    self.assertEqual(
+                        {item.account_type for item in response.snapshot.items},
+                        {"mailapi_url"},
+                    )
+            finally:
+                test_engine.dispose()
+
     def test_rule_engine_returns_first_failure(self):
         rules_module = load_microsoft_import_rules_module()
         MicrosoftMailImportRecord = rules_module.MicrosoftMailImportRecord

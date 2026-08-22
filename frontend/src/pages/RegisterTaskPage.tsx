@@ -39,14 +39,15 @@ import {
   DEFAULT_REGISTER_RETRY_TIMES,
   normalizeRegisterRetryTimes,
 } from '@/lib/registerRetry'
+import {
+  MAIL_IMPORT_SOURCE_OPTIONS,
+  isMailImportProvider,
+  normalizeMailImportSource,
+  resolveEffectiveMailProvider,
+} from '@/lib/mailImport'
 import { apiFetch } from '@/lib/utils'
 
 const { Text } = Typography
-
-function resolveEffectiveMailProvider(mailProvider: string, mailImportSource: string) {
-  if (mailProvider !== 'mail_import') return mailProvider
-  return mailImportSource === 'applemail' ? 'applemail' : 'microsoft'
-}
 
 export default function RegisterTaskPage() {
   const [form] = Form.useForm()
@@ -70,13 +71,13 @@ export default function RegisterTaskPage() {
     apiFetch('/config').then((cfg) => {
       const currentPlatform = form.getFieldValue('platform') || 'chatgpt'
       const configMailProvider = String(cfg.mail_provider || 'luckmail')
-      const isMailImportProvider = configMailProvider === 'microsoft' || configMailProvider === 'outlook' || configMailProvider === 'applemail'
+      const usesMailImport = isMailImportProvider(configMailProvider)
       form.setFieldsValue({
         executor_type: normalizeExecutorForPlatform(currentPlatform, cfg.default_executor),
         captcha_solver: cfg.default_captcha_solver || 'yescaptcha',
         register_retry_times: normalizeRegisterRetryTimes(cfg.register_retry_times),
-        mail_provider: isMailImportProvider ? 'mail_import' : configMailProvider,
-        mail_import_source: configMailProvider === 'applemail' ? 'applemail' : 'microsoft',
+        mail_provider: usesMailImport ? 'mail_import' : configMailProvider,
+        mail_import_source: normalizeMailImportSource(cfg.mail_import_source, configMailProvider),
         applemail_base_url: cfg.applemail_base_url || 'https://www.appleemail.top',
         applemail_pool_dir: cfg.applemail_pool_dir || 'mail',
         applemail_pool_file: cfg.applemail_pool_file || '',
@@ -270,7 +271,7 @@ export default function RegisterTaskPage() {
         executor_type: 'protocol',
         captcha_solver: 'yescaptcha',
         mail_provider: 'luckmail',
-        mail_import_source: 'microsoft',
+        mail_import_source: 'outlook',
         applemail_base_url: 'https://www.appleemail.top',
         applemail_pool_dir: 'mail',
         applemail_mailboxes: 'INBOX,Junk',
@@ -405,13 +406,13 @@ export default function RegisterTaskPage() {
             />
           </Form.Item>
           {mailProviderRaw === 'mail_import' && (
-            <Form.Item name="mail_import_source" label="导入类型" rules={[{ required: true }]}>
-              <Select
-                options={[
-                  { value: 'microsoft', label: '微软邮箱（Outlook / Hotmail）' },
-                  { value: 'applemail', label: 'AppleMail / 小苹果' },
-                ]}
-              />
+            <Form.Item
+              name="mail_import_source"
+              label="导入类型"
+              rules={[{ required: true }]}
+              extra="Outlook / Hotmail / MailAPI URL 共用同一个微软号池，运行时按账号自身的类型决定用 Graph/IMAP 还是轮询 mailapi_url。"
+            >
+              <Select options={MAIL_IMPORT_SOURCE_OPTIONS} />
             </Form.Item>
           )}
           {mailProvider === 'microsoft' && (
