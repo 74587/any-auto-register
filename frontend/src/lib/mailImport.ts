@@ -1,7 +1,8 @@
 /**
- * 「邮箱导入」下面还分四个视图：Outlook / Hotmail / MailAPI URL 走同一个微软号池，
+ * 「邮箱导入」下面还分四个视图：Outlook / Hotmail / MailAPI URL 走同一张微软号池表，
  * AppleMail 走本地池文件。视图选择存在配置项 `mail_import_source` 里，`mail_provider`
- * 只记到号池粒度，所以不能拿它反推视图——那样选什么都会退回 Outlook。
+ * 只记到号池粒度，所以不能拿它反推视图——那样选什么都会退回 Outlook。取号时后端还要
+ * 按视图筛 account_type，所以提交注册任务必须把它一起带上。
  */
 import { Form } from 'antd'
 import type { FormInstance } from 'antd'
