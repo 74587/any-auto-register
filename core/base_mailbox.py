@@ -3490,8 +3490,11 @@ class MailApiUrlOtpBackend(OutlookMailboxBackend):
         return str(response.text or "")
 
     def _extract_code(self, text: str, code_pattern: str | None) -> str:
-        normalized_text = self.mailbox._decode_raw_content(text) or str(text or "")
-        return str(self.mailbox._safe_extract(normalized_text, code_pattern) or "").strip()
+        # MailAPI 返回的是网页/JSON，不是原始邮件：按邮件头切分会从第一个空行处
+        # 把正文腰斩（分享页的 <style> 里就有空行），码常常正好落在被砍掉的那半边。
+        # 提取也走剥链接的那版，免得把 SendGrid 追踪链接里的数字当成验证码。
+        normalized_text = self.mailbox._yyds_decode_raw_content(text) or str(text or "")
+        return str(self.mailbox._yyds_safe_extract(normalized_text, code_pattern) or "").strip()
 
     def get_current_ids(self, account: MailboxAccount) -> set:
         try:
