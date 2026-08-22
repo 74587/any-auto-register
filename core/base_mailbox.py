@@ -338,6 +338,7 @@ def create_mailbox(
             token_endpoint=extra.get("outlook_token_endpoint", ""),
             backend=extra.get("outlook_backend", ""),
             graph_api_base=extra.get("outlook_graph_api_base", ""),
+            mail_import_source=extra.get("mail_import_source", ""),
             proxy=proxy,
         )
     else:  # laoudo
@@ -3563,9 +3564,12 @@ class OutlookMailbox(BaseMailbox):
         token_endpoint: str = "",
         backend: str = "graph",
         graph_api_base: str = "",
+        mail_import_source: str = "",
         proxy: str = None,
     ):
         self._lock = threading.Lock()
+        self._mail_import_source = str(mail_import_source or "").strip().lower()
+        self._pool_account_type = self._resolve_pool_account_type(mail_import_source)
         self._proxy = build_requests_proxy_config(proxy)
         self._imap_servers = []
         if imap_server:
@@ -3616,6 +3620,28 @@ class OutlookMailbox(BaseMailbox):
             return account_type
         return "microsoft_oauth"
 
+    @staticmethod
+    def _resolve_pool_account_type(mail_import_source: Any) -> str:
+        from services.mail_imports.import_source import resolve_pool_account_type
+
+        return resolve_pool_account_type(mail_import_source)
+
+    @staticmethod
+    def _describe_pool_account_type(account_type: Any) -> str:
+        from services.mail_imports.import_source import describe_pool_account_type
+
+        return describe_pool_account_type(account_type)
+
+    @staticmethod
+    def _account_type_matches(account_type: Any, wanted: str):
+        """老库里 account_type 可能是 NULL 或空串，那些行都是 OAuth 号。"""
+        from sqlalchemy import func, or_
+
+        normalized = func.lower(func.trim(func.coalesce(account_type, "")))
+        if wanted == "microsoft_oauth":
+            return or_(normalized == "microsoft_oauth", normalized == "")
+        return normalized == wanted
+
     def _is_mailapi_account(self, account: MailboxAccount) -> bool:
         extra = getattr(account, "extra", None) or {}
         account_type = self._normalize_account_type(extra.get("account_type"))
@@ -3627,6 +3653,17 @@ class OutlookMailbox(BaseMailbox):
         from sqlalchemy import func
         from sqlmodel import Session, select
         from core.db import engine, AccountModel, OutlookAccountModel
+
+        wanted_type = self._pool_account_type
+        if wanted_type:
+            self._log(
+                "[微软邮箱] 号池筛选: "
+                f"mail_import_source={self._mail_import_source or '(未设置)'} "
+                f"只取 account_type={wanted_type}"
+                f"（{self._describe_pool_account_type(wanted_type)}）"
+            )
+        else:
+            self._log("[微软邮箱] 号池筛选: 未指定导入类型，整池取号")
 
         with OutlookMailbox._pop_lock:
             with Session(engine) as session:
@@ -3640,13 +3677,38 @@ class OutlookMailbox(BaseMailbox):
                     .where(func.lower(OutlookAccountModel.email).notin_(registered))
                     .order_by(OutlookAccountModel.id)
                 )
+                if wanted_type:
+                    query = query.where(
+                        self._account_type_matches(
+                            OutlookAccountModel.account_type, wanted_type
+                        )
+                    )
                 account = session.exec(query).first()
                 if not account:
-                    total_left = session.exec(
-                        select(func.count(OutlookAccountModel.id)).where(
-                            OutlookAccountModel.enabled == True
+                    enabled_left = select(func.count(OutlookAccountModel.id)).where(
+                        OutlookAccountModel.enabled == True
+                    )
+                    total_left = session.exec(enabled_left).one()
+                    if wanted_type:
+                        same_type_left = session.exec(
+                            enabled_left.where(
+                                self._account_type_matches(
+                                    OutlookAccountModel.account_type, wanted_type
+                                )
+                            )
+                        ).one()
+                        label = self._describe_pool_account_type(wanted_type)
+                        if same_type_left:
+                            raise RuntimeError(
+                                f"微软邮箱账号池里剩下的 {same_type_left} 个 {label} 地址"
+                                "都已经注册过了，请导入新的邮箱"
+                            )
+                        raise RuntimeError(
+                            f"邮箱导入类型选的是 {label}，但微软邮箱账号池里没有"
+                            f" account_type={wanted_type} 的账号"
+                            f"（池里还剩 {total_left} 个其它类型的账号，不会拿来顶替），"
+                            "请按该类型导入邮箱，或到设置页改回对应的导入类型"
                         )
-                    ).one()
                     if total_left:
                         raise RuntimeError(
                             f"微软邮箱账号池里剩下的 {total_left} 个地址都已经注册过了，"

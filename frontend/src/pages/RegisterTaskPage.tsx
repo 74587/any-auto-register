@@ -140,6 +140,8 @@ export default function RegisterTaskPage() {
     const effectiveMailProvider = resolveEffectiveMailProvider(values.mail_provider, values.mail_import_source)
     const registerExtra = {
       mail_provider: effectiveMailProvider,
+      // 微软号池里 OAuth 号和 MailAPI URL 号混着放，取号要按这里选的类型筛
+      mail_import_source: normalizeMailImportSource(values.mail_import_source, effectiveMailProvider),
       applemail_base_url: values.applemail_base_url,
       applemail_pool_dir: values.applemail_pool_dir,
       applemail_pool_file: values.applemail_pool_file,
@@ -410,7 +412,7 @@ export default function RegisterTaskPage() {
               name="mail_import_source"
               label="导入类型"
               rules={[{ required: true }]}
-              extra="Outlook / Hotmail / MailAPI URL 共用同一个微软号池，运行时按账号自身的类型决定用 Graph/IMAP 还是轮询 mailapi_url。"
+              extra="Outlook / Hotmail / MailAPI URL 共用同一个微软号池：选 MailAPI URL 只会取 mailapi_url 类型的账号，选 Outlook / Hotmail 只会取 OAuth 账号，两类之间不会互相顶替。"
             >
               <Select options={MAIL_IMPORT_SOURCE_OPTIONS} />
             </Form.Item>
