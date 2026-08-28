@@ -23,6 +23,7 @@ logs/
 accounts.txt
 *_accounts.txt
 account.txt
+proxies.txt
 mail/
 smstome_all_numbers.txt
 smstome*_numbers.txt

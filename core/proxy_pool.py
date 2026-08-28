@@ -1,11 +1,13 @@
-"""代理池 - 从数据库读取代理，支持轮询和按区域选取"""
+"""Proxy pool backed by the application database."""
 
-from typing import Optional
-from sqlmodel import Session, select
-from .db import ProxyModel, engine
-from .proxy_utils import build_requests_proxy_config
-import time, threading, random
 from datetime import datetime, timezone
+import threading
+from typing import Optional
+
+from sqlmodel import Session, select
+
+from .db import ProxyModel, engine
+from .proxy_utils import build_requests_proxy_config, normalize_proxy_url
 
 
 class ProxyPool:
@@ -13,8 +15,29 @@ class ProxyPool:
         self._index = 0
         self._lock = threading.Lock()
 
+    def _find_by_url(self, session: Session, url: str) -> ProxyModel | None:
+        p = session.exec(select(ProxyModel).where(ProxyModel.url == url)).first()
+        if p:
+            return p
+
+        normalized = normalize_proxy_url(url)
+        if not normalized:
+            return None
+
+        if normalized != url:
+            p = session.exec(
+                select(ProxyModel).where(ProxyModel.url == normalized)
+            ).first()
+            if p:
+                return p
+
+        for candidate in session.exec(select(ProxyModel)).all():
+            if normalize_proxy_url(candidate.url) == normalized:
+                return candidate
+        return None
+
     def get_next(self, region: str = "") -> Optional[str]:
-        """加权轮询取一个可用代理，在高成功率代理间轮换"""
+        """Return the next active proxy, biased toward higher success rate."""
         with Session(engine) as s:
             q = select(ProxyModel).where(ProxyModel.is_active == True)
             if region:
@@ -33,27 +56,27 @@ class ProxyPool:
 
     def report_success(self, url: str) -> None:
         with Session(engine) as s:
-            p = s.exec(select(ProxyModel).where(ProxyModel.url == url)).first()
+            p = self._find_by_url(s, url)
             if p:
                 p.success_count += 1
+                p.is_active = True
                 p.last_checked = datetime.now(timezone.utc)
                 s.add(p)
                 s.commit()
 
     def report_fail(self, url: str) -> None:
         with Session(engine) as s:
-            p = s.exec(select(ProxyModel).where(ProxyModel.url == url)).first()
+            p = self._find_by_url(s, url)
             if p:
                 p.fail_count += 1
                 p.last_checked = datetime.now(timezone.utc)
-                # 连续失败超过10次自动禁用
                 if p.fail_count > 0 and p.success_count == 0 and p.fail_count >= 5:
                     p.is_active = False
                 s.add(p)
                 s.commit()
 
     def check_all(self) -> dict:
-        """检测所有代理可用性"""
+        """Probe all configured proxies against a neutral endpoint."""
         import requests
 
         with Session(engine) as s:
