@@ -20,3 +20,13 @@ import core.config_store  # noqa: E402,F401  注册 configs 表
 from core.db import init_db  # noqa: E402  必须在 DATABASE_URL 设好之后再 import
 
 init_db()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    from core.db import engine
+
+    engine.dispose()
+    try:
+        _TMP_DB_DIR.cleanup()
+    except PermissionError:
+        pass

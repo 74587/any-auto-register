@@ -1,8 +1,54 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
+
+
+@dataclass(frozen=True)
+class _LegacyProxyParts:
+    scheme: str
+    host: str
+    port: str
+    username: str = ""
+    password: str = ""
+
+
+def _parse_legacy_proxy(value: str) -> _LegacyProxyParts | None:
+    fields = value.split(":")
+    if len(fields) == 2 and fields[1].isdigit():
+        return _LegacyProxyParts("http", fields[0], fields[1])
+    if len(fields) == 4 and fields[1].isdigit():
+        return _LegacyProxyParts("http", fields[0], fields[1], fields[2], fields[3])
+    if len(fields) >= 5 and fields[2].isdigit() and fields[0].lower() in {
+        "http",
+        "https",
+        "socks4",
+        "socks5",
+        "socks5h",
+    }:
+        return _LegacyProxyParts(
+            fields[0].lower(),
+            fields[1],
+            fields[2],
+            fields[3],
+            ":".join(fields[4:]),
+        )
+    return None
+
+
+def _legacy_to_url(parts: _LegacyProxyParts) -> str:
+    scheme = "socks5h" if parts.scheme == "socks5" else parts.scheme
+    host = parts.host
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    auth = ""
+    if parts.username or parts.password:
+        username = quote(parts.username, safe="")
+        password = quote(parts.password, safe="")
+        auth = f"{username}:{password}@"
+    return f"{scheme}://{auth}{host}:{parts.port}"
 
 
 def _is_auth_socks_proxy(scheme: str, username: str, password: str) -> bool:
@@ -49,6 +95,10 @@ def normalize_proxy_url(proxy_url: Optional[str]) -> Optional[str]:
     if not value:
         return None
 
+    legacy = _parse_legacy_proxy(value)
+    if legacy:
+        return _legacy_to_url(legacy)
+
     parts = urlsplit(value)
     if (parts.scheme or "").lower() == "socks5":
         parts = parts._replace(scheme="socks5h")
@@ -56,17 +106,54 @@ def normalize_proxy_url(proxy_url: Optional[str]) -> Optional[str]:
     return value
 
 
+def redact_proxy_url(proxy_url: Optional[str]) -> str:
+    """Return a log-safe proxy URL without authentication credentials."""
+    value = str(proxy_url or "").strip()
+    if not value:
+        return ""
+
+    legacy = _parse_legacy_proxy(value)
+    if legacy and "://" not in value:
+        if legacy.username or legacy.password:
+            if value.split(":", 1)[0].lower() in {
+                "http",
+                "https",
+                "socks4",
+                "socks5",
+                "socks5h",
+            }:
+                return f"{legacy.scheme}:{legacy.host}:{legacy.port}:***:***"
+            return f"{legacy.host}:{legacy.port}:***:***"
+        return f"{legacy.host}:{legacy.port}"
+
+    parts = urlsplit(value)
+    if not parts.scheme:
+        return "(configured proxy)"
+
+    host = parts.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    try:
+        port = f":{parts.port}" if parts.port is not None else ""
+    except ValueError:
+        return f"{parts.scheme}://(configured proxy)"
+    auth = (
+        "***:***@" if parts.username is not None or parts.password is not None else ""
+    )
+    return urlunsplit(
+        (parts.scheme, f"{auth}{host}{port}", parts.path, parts.query, parts.fragment)
+    )
+
+
 def build_requests_proxy_config(proxy_url: Optional[str]) -> Optional[dict[str, str]]:
-    if not proxy_url:
+    normalized = normalize_proxy_url(proxy_url)
+    if not normalized:
         return None
-    return {"http": proxy_url, "https": proxy_url}
+    return {"http": normalized, "https": normalized}
 
 
 def build_playwright_proxy_config(proxy_url: Optional[str]) -> Optional[dict[str, str]]:
-    if not proxy_url:
-        return None
-
-    value = str(proxy_url).strip()
+    value = normalize_proxy_url(proxy_url)
     if not value:
         return None
     parts = urlsplit(value)
@@ -77,8 +164,6 @@ def build_playwright_proxy_config(proxy_url: Optional[str]) -> Optional[dict[str
         return {"server": server}
 
     scheme = (parts.scheme or "").lower()
-    if _is_auth_socks_proxy(scheme, parts.username or "", parts.password or ""):
-        return None
     if scheme == "socks5h":
         scheme = "socks5"
 

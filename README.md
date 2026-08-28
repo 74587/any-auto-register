@@ -31,6 +31,7 @@
 - [Docker 部署](#docker-部署)
 - [插件与外部依赖](#插件与外部依赖)
 - [常见问题排查](#常见问题排查)
+- [更新记录](#更新记录)
 - [项目结构](#项目结构)
 - [Electron 开发说明](#electron-开发说明)
 - [用户讨论群](#用户讨论群)
@@ -596,6 +597,15 @@ node --version
 ```
 
 Sentinel PoW 求解器要在 Node 沙箱里跑 OpenAI 的 `sdk.js`，没有 Node 时算出来的 token 过不了服务端复核，**验证码邮件会被静默丢弃**——日志上看不到明显报错，但码永远收不到。若 `node` 不在 `PATH` 里，用 `OPENAI_SENTINEL_NODE_PATH` 指定绝对路径。
+
+## 更新记录
+
+### 2026-08-28
+
+- 优化代理池对 `host:port:user:pass` 格式的兼容性，代理检测与浏览器执行器会使用一致的规范化代理配置。
+- 代理健康统计现在能准确回写到原始代理记录；检测成功会自动恢复启用，从未成功且连续失败的代理会自动停用。
+
+完整历史请查看 [docs/releases/release-notes.md](docs/releases/release-notes.md)。
 
 ## 项目结构
 
