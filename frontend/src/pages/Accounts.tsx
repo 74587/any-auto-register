@@ -38,6 +38,7 @@ import { ChatGPTRegisterFlowSelect } from '@/components/ChatGPTRegisterFlowSelec
 import { ChatGPTRegistrationModeSwitch } from '@/components/ChatGPTRegistrationModeSwitch'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
 import type { TaskKind } from '@/components/TaskLogPanel'
+import { PaymentOperationDrawer } from '@/components/payments/PaymentOperationDrawer'
 import { usePersistentChatGPTBind2fa } from '@/hooks/usePersistentChatGPTBind2fa'
 import { usePersistentChatGPTRegisterFlow } from '@/hooks/usePersistentChatGPTRegisterFlow'
 import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatGPTRegistrationMode'
@@ -468,6 +469,7 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
   const [taskModalTitle, setTaskModalTitle] = useState('')
   const [taskModalKind, setTaskModalKind] = useState<TaskKind>('backfill_rt')
   const [actionTaskId, setActionTaskId] = useState<string | null>(null)
+  const [paymentOpen, setPaymentOpen] = useState(false)
 
   const showResult = (
     title: string,
@@ -529,6 +531,11 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
       } catch {
         message.error('复制失败，请在账号详情里手动复制')
       }
+      return
+    }
+
+    if (actionId === 'payment_channel_link' || actionId === 'payment_channel_pay') {
+      setPaymentOpen(true)
       return
     }
 
@@ -703,6 +710,12 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
           </pre>
         ) : null}
       </Modal>
+      <PaymentOperationDrawer
+        account={acc}
+        open={paymentOpen}
+        onClose={() => setPaymentOpen(false)}
+        onDone={onRefresh}
+      />
     </>
   )
 }

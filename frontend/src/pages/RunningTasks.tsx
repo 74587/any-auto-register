@@ -23,6 +23,7 @@ import {
 import { getPlatformColor, getPlatformLabel } from '@/lib/platforms'
 import { apiFetch } from '@/lib/utils'
 import { TaskLogPanel } from '@/components/TaskLogPanel'
+import type { TaskKind } from '@/components/TaskLogPanel'
 
 const { Text, Title } = Typography
 
@@ -48,6 +49,7 @@ const SOURCE_LABELS: Record<string, string> = {
   schedule: '调度',
   backfill_rt: '补 RT',
   bind_2fa: '绑 2FA',
+  payment: '支付',
 }
 
 const STATUS_CONFIG: Record<string, { color: string; label: string; icon?: React.ReactNode }> = {
@@ -131,6 +133,7 @@ export default function RunningTasks() {
   const isActive = (t: TaskSnapshot) => t.status === 'running' || t.status === 'pending'
   const activeTasks = tasks.filter(isActive)
   const finishedTasks = tasks.filter((t) => !isActive(t))
+  const logTask = logTaskId ? tasks.find((task) => task.id === logTaskId) : null
 
   const handleDelete = async (taskId: string) => {
     try {
@@ -328,7 +331,7 @@ export default function RunningTasks() {
         destroyOnClose
         bodyStyle={{ padding: 16 }}
       >
-        {logTaskId && <TaskLogPanel taskId={logTaskId} />}
+        {logTaskId && <TaskLogPanel taskId={logTaskId} kind={(logTask?.source || 'register') as TaskKind} />}
       </Drawer>
     </div>
   )

@@ -4,6 +4,17 @@ from unittest import mock
 from core.base_mailbox import MailboxAccount, OutlookMailbox, create_mailbox
 
 
+class _SelectFallbackImap:
+    def __init__(self):
+        self.calls = []
+
+    def select(self, folder, readonly=False):
+        self.calls.append((folder, readonly))
+        if readonly:
+            raise RuntimeError("EXAMINE command error: BAD Command Argument Error. 12")
+        return "OK", []
+
+
 class _FakeResponse:
     def __init__(self, status_code, payload=None, text="", json_error=None):
         self.status_code = status_code
@@ -19,11 +30,41 @@ class _FakeResponse:
 
 
 class OutlookMailboxOAuthTests(unittest.TestCase):
+    def test_imap_select_falls_back_to_mutable_select_when_examine_is_rejected(self):
+        mailbox = OutlookMailbox()
+        connection = _SelectFallbackImap()
+
+        with mock.patch.object(mailbox, "_log") as log:
+            result = mailbox._backends["imap"]._select_folder(connection, "INBOX")
+
+        self.assertEqual(result[0], "OK")
+        self.assertEqual(connection.calls, [("INBOX", True), ("INBOX", False)])
+        log.assert_called_once()
+
     def test_create_mailbox_outlook_defaults_to_graph_backend(self):
         mailbox = create_mailbox("outlook", extra={})
 
         self.assertIsInstance(mailbox, OutlookMailbox)
         self.assertEqual(mailbox._backend_name, "graph")
+
+    def test_graph_backend_delegates_to_imap_after_imap_scope_is_detected(self):
+        mailbox = OutlookMailbox()
+        account = MailboxAccount(
+            email="demo@outlook.com",
+            extra={"client_id": "client-id", "refresh_token": "refresh-token"},
+        )
+        with mock.patch.object(
+            mailbox,
+            "_get_oauth_access_token",
+            side_effect=lambda _account, **_kwargs: account.extra.update(_oauth_backend_capability="imap") or "imap-token",
+        ), mock.patch.object(
+            mailbox._backends["imap"],
+            "get_current_ids",
+            return_value={"INBOX:1"},
+        ) as imap_ids:
+            result = mailbox._backends["graph"].get_current_ids(account)
+        self.assertEqual(result, {"INBOX:1"})
+        imap_ids.assert_called_once_with(account)
 
     @mock.patch("requests.post")
     def test_fetch_oauth_token_graph_backend_prefers_graph_scope(self, mock_post):

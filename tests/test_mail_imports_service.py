@@ -463,10 +463,14 @@ class MailImportServiceTests(unittest.TestCase):
                 self.assertEqual(payload["email"], "fresh@outlook.com")
 
                 with Session(test_engine) as session:
-                    left = sorted(
-                        row.email for row in session.exec(select(OutlookAccountModel)).all()
-                    )
-                self.assertEqual(left, ["used+wbuuax@outlook.com"])
+                    rows = {
+                        row.email: row
+                        for row in session.exec(select(OutlookAccountModel)).all()
+                    }
+                self.assertEqual(
+                    sorted(rows), ["fresh@outlook.com", "used+wbuuax@outlook.com"]
+                )
+                self.assertEqual(rows["fresh@outlook.com"].status, "in_use")
             finally:
                 test_engine.dispose()
 

@@ -135,10 +135,14 @@ class ChatGPTRegistrationEngine:
         try:
             result = flow.run_register(provider)
         except Exception as exc:
-            return self._salvage(flow, exc)
+            registration = self._salvage(flow, exc)
+            self._set_mailbox_status(provider, "used" if registration.success else "failed")
+            return self._attach_mailbox_credentials(registration, provider)
 
         self._ensure_two_factor(flow, provider)
-        return self._attach_two_factor(RegistrationResult.from_auth_result(result))
+        registration = self._attach_two_factor(RegistrationResult.from_auth_result(result))
+        self._set_mailbox_status(provider, "used")
+        return self._attach_mailbox_credentials(registration, provider)
 
     def _run_phone(self) -> RegistrationResult:
         """手机号注册。邮箱只在「手机注册 + 绑定邮箱」模式下才会去池子里领。"""
@@ -161,12 +165,16 @@ class ChatGPTRegistrationEngine:
             with mirror_protocol_logs(self.log):
                 result = flow.run_phone_register(mail_provider=provider, bind_email=bind_email)
         except Exception as exc:
-            return self._salvage(flow, exc)
+            registration = self._salvage(flow, exc)
+            self._set_mailbox_status(provider, "used" if registration.success else "failed")
+            return self._attach_mailbox_credentials(registration, provider)
 
         self._ensure_two_factor(flow, provider)
         registration = self._attach_two_factor(
             RegistrationResult.from_auth_result(result, source="phone_register")
         )
+        self._set_mailbox_status(provider, "used")
+        registration = self._attach_mailbox_credentials(registration, provider)
         bind_error = getattr(flow, "_bind_email_error", "")
         if bind_email and not registration.metadata.get("bound_email"):
             registration.metadata["bind_email_error"] = bind_error or "未绑定邮箱"
@@ -182,6 +190,58 @@ class ChatGPTRegistrationEngine:
             ephemeral=not self.email,
             otp_timeout=self._otp_timeout(),
         )
+
+    def _attach_mailbox_credentials(
+        self,
+        registration: RegistrationResult,
+        provider: Optional[MailboxProviderAdapter],
+    ) -> RegistrationResult:
+        """保留号池收件凭据，供补 RT / 补 2FA 按地址找回邮箱。"""
+        account = getattr(provider, "account", None)
+        if account is None:
+            mailbox = getattr(provider, "_mailbox", None)
+            account = getattr(mailbox, "account", None)
+        source = getattr(account, "extra", None)
+        if not isinstance(source, dict):
+            return registration
+
+        keys = (
+            "mail_provider",
+            "provider",
+            "account_type",
+            "password",
+            "client_id",
+            "refresh_token",
+            "mailapi_url",
+            "mailbox_token",
+        )
+        for key in keys:
+            value = source.get(key)
+            if value not in (None, "", False):
+                registration.metadata.setdefault(key, value)
+
+        # OutlookMailbox 的内部凭据使用 provider=microsoft；补 RT 解析器识别
+        # 的是 mail_provider，统一补一份标准字段。
+        if "mail_provider" not in registration.metadata:
+            provider_name = str(source.get("provider") or "").strip()
+            if provider_name:
+                registration.metadata["mail_provider"] = provider_name
+        return registration
+
+    @staticmethod
+    def _set_mailbox_status(
+        provider: Optional[MailboxProviderAdapter], status: str
+    ) -> None:
+        if provider is None:
+            return
+        mailbox = getattr(provider, "_mailbox", None)
+        account = getattr(provider, "account", None)
+        setter = getattr(mailbox, "set_account_status", None)
+        if callable(setter) and account is not None:
+            try:
+                setter(account, status)
+            except Exception:
+                logger.debug("更新邮箱池状态失败", exc_info=True)
 
     def _build_flow(self, sms_callback: Optional[object] = None) -> AuthFlow:
         flow = AuthFlow(

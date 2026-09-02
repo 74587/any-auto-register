@@ -9,14 +9,16 @@ interface TaskLogPanelProps {
   onDone?: () => void
   /** 任务类型只影响文案，日志流对所有后台任务都是同一套 */
   kind?: TaskKind
+  operation?: 'link' | 'pay'
 }
 
-export type TaskKind = 'register' | 'backfill_rt' | 'bind_2fa'
+export type TaskKind = 'register' | 'backfill_rt' | 'bind_2fa' | 'payment'
 
 const KIND_TEXT: Record<TaskKind, { success: string; registered: string; total: string; done: string }> = {
   register: { success: '注册成功', registered: '已注册', total: '总共注册', done: '注册完成' },
   backfill_rt: { success: '补 RT 成功', registered: '已处理', total: '总共账号', done: '补 RT 完成' },
   bind_2fa: { success: '绑定成功', registered: '已处理', total: '总共账号', done: '绑定 2FA 完成' },
+  payment: { success: '支付成功', registered: '已处理', total: '总共账号', done: '支付任务完成' },
 }
 
 type TaskTerminalStatus = 'idle' | 'done' | 'failed' | 'stopped'
@@ -55,8 +57,14 @@ function mergeSummary(previous: RegisterSummary, incoming: Partial<RegisterSumma
   })
 }
 
-export function TaskLogPanel({ taskId, onDone, kind = 'register' }: TaskLogPanelProps) {
-  const text = KIND_TEXT[kind]
+export function TaskLogPanel({ taskId, onDone, kind = 'register', operation }: TaskLogPanelProps) {
+  const text = kind === 'payment'
+    ? (operation === 'link'
+      ? { success: '提链成功', registered: '已处理', total: '总共账号', done: '提链任务完成' }
+      : operation === 'pay'
+        ? { success: '支付成功', registered: '已处理', total: '总共账号', done: '支付任务完成' }
+        : { success: '操作成功', registered: '已处理', total: '总共账号', done: '支付任务完成' })
+    : KIND_TEXT[kind]
   const [lines, setLines] = useState<string[]>([])
   const [summary, setSummary] = useState<RegisterSummary>({ success: 0, registered: 0, total: 0 })
   const [error, setError] = useState('')

@@ -34,6 +34,7 @@ interface MailImportSnapshotItem {
   email: string
   mailbox: string
   enabled?: boolean | null
+  status?: string
   has_oauth?: boolean | null
   account_type?: 'microsoft_oauth' | 'mailapi_url' | null
 }
@@ -542,11 +543,27 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
         } as never,
         {
           title: '状态',
+          dataIndex: 'status',
+          key: 'status',
+          width: 110,
+          render: (value: string | null | undefined) => {
+            const labels: Record<string, { color: string; text: string }> = {
+              available: { color: 'green', text: '未使用' },
+              in_use: { color: 'processing', text: '使用中' },
+              used: { color: 'blue', text: '已使用' },
+              failed: { color: 'red', text: '失败' },
+            }
+            const item = labels[String(value || 'available')] || labels.available
+            return <Tag color={item.color}>{item.text}</Tag>
+          },
+        } as never,
+        {
+          title: '启用',
           dataIndex: 'enabled',
           key: 'enabled',
-          width: 100,
+          width: 80,
           render: (value: boolean | null | undefined) => (
-            <Tag color={value ? 'green' : 'default'}>{value ? '启用' : '停用'}</Tag>
+            <Tag color={value ? 'default' : 'default'}>{value ? '是' : '否'}</Tag>
           ),
         } as never,
         {

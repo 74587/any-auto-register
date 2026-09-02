@@ -84,11 +84,21 @@ class ChatGPTPlatform(BasePlatform):
             {"id": "backfill_refresh_token", "label": "补 RT", "params": []},
             {"id": "bind_2fa", "label": "绑定 2FA", "params": []},
             {
-                "id": "payment_link",
-                "label": "生成支付链接",
+                "id": "payment_channel_link",
+                "label": "渠道提链",
                 "params": [
-                    {"key": "country", "label": "地区", "type": "select", "options": ["US", "SG", "TR", "HK", "JP", "GB", "AU", "CA"]},
-                    {"key": "plan", "label": "套餐", "type": "select", "options": ["plus", "team"]},
+                    {"key": "channel", "label": "渠道", "type": "text"},
+                    {"key": "country", "label": "账单国家", "type": "text"},
+                    {"key": "currency", "label": "币种", "type": "text"},
+                ],
+            },
+            {
+                "id": "payment_channel_pay",
+                "label": "渠道支付",
+                "params": [
+                    {"key": "channel", "label": "渠道", "type": "text"},
+                    {"key": "card_id", "label": "卡片 ID", "type": "number"},
+                    {"key": "taxfree_state", "label": "免税州", "type": "text"},
                 ],
             },
             {
@@ -278,6 +288,28 @@ class ChatGPTPlatform(BasePlatform):
                     country=country,
                 )
             return {"ok": bool(url), "data": {"url": url}}
+
+        if action_id in {"payment_channel_link", "payment_channel_pay"}:
+            from services.payment_channels import PaymentAccount
+            from services.payment_channels.service import create_link_for_context, pay_for_context
+
+            context = PaymentAccount(
+                platform=account.platform,
+                account_id=str(account.user_id or ""),
+                email=account.email,
+                access_token=str(a.access_token or ""),
+                session_token=str(a.session_token or ""),
+                user_id=str(account.user_id or ""),
+                cookies=str(a.cookies or ""),
+            )
+            options = dict(params or {})
+            channel = str(options.pop("channel", "direct") or "direct")
+            result = (
+                create_link_for_context(context, channel, options=options)
+                if action_id == "payment_channel_link"
+                else pay_for_context(context, channel, options=options)
+            )
+            return result.as_dict()
 
         if action_id == "upload_cpa":
             from platforms.chatgpt.cpa_upload import generate_token_json, upload_to_cpa

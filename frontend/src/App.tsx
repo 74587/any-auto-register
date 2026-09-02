@@ -11,6 +11,7 @@ import {
   MoonOutlined,
   LogoutOutlined,
   PlayCircleOutlined,
+  CreditCardOutlined,
 } from '@ant-design/icons'
 import zhCN from 'antd/es/locale/zh_CN'
 import Dashboard from '@/pages/Dashboard'
@@ -21,6 +22,7 @@ import Proxies from '@/pages/Proxies'
 import Settings from '@/pages/Settings'
 import TaskHistory from '@/pages/TaskHistory'
 import RunningTasks from '@/pages/RunningTasks'
+import Payments from '@/pages/Payments'
 import Login from '@/pages/Login'
 import { applyThemeVars, darkTheme, lightTheme } from './theme'
 import { apiFetch, clearToken, getToken } from '@/lib/utils'
@@ -93,6 +95,7 @@ function AppContent() {
     if (path === '/proxies') return ['/proxies']
     if (path === '/settings') return ['/settings']
     if (path === '/running-tasks') return ['/running-tasks']
+    if (path === '/payments') return ['/payments']
     return ['/']
   }
 
@@ -106,6 +109,11 @@ function AppContent() {
       key: '/running-tasks',
       icon: <PlayCircleOutlined />,
       label: '任务运行',
+    },
+    {
+      key: '/payments',
+      icon: <CreditCardOutlined />,
+      label: '支付中心',
     },
     {
       key: '/accounts',
@@ -225,6 +233,7 @@ function AppContent() {
             <Route path="/register" element={<RegisterTaskPage />} />
             <Route path="/icloud" element={<ICloudPage />} />
             <Route path="/running-tasks" element={<RunningTasks />} />
+            <Route path="/payments" element={<Payments />} />
             <Route path="/history" element={<TaskHistory />} />
             <Route path="/proxies" element={<Proxies />} />
             <Route path="/settings" element={<Settings />} />

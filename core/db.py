@@ -88,6 +88,7 @@ class OutlookAccountModel(SQLModel, table=True):
     account_type: str = "microsoft_oauth"
     mailapi_url: str = ""
     enabled: bool = True
+    status: str = Field(default="available", index=True)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
     last_used: Optional[datetime] = None
@@ -195,11 +196,24 @@ def _migrate_outlook_accounts_schema() -> None:
             conn.exec_driver_sql(
                 "ALTER TABLE outlook_accounts ADD COLUMN mailapi_url TEXT DEFAULT ''"
             )
+        if "status" not in existing_columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE outlook_accounts ADD COLUMN status TEXT DEFAULT 'available'"
+            )
         conn.exec_driver_sql(
             "UPDATE outlook_accounts SET account_type = 'microsoft_oauth' WHERE account_type IS NULL OR TRIM(account_type) = ''"
         )
         conn.exec_driver_sql(
             "UPDATE outlook_accounts SET mailapi_url = '' WHERE mailapi_url IS NULL"
+        )
+        conn.exec_driver_sql(
+            "UPDATE outlook_accounts SET status = 'available' WHERE status IS NULL OR TRIM(status) = ''"
+        )
+        conn.exec_driver_sql(
+            "UPDATE outlook_accounts SET status = 'used' "
+            "WHERE EXISTS (SELECT 1 FROM accounts "
+            "WHERE lower(accounts.email) = lower(outlook_accounts.email)) "
+            "AND status = 'available'"
         )
 
 

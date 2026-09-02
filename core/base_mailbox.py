@@ -3116,13 +3116,29 @@ class OutlookMailboxBackend(ABC):
 class OutlookImapMailboxBackend(OutlookMailboxBackend):
     backend_name = "imap"
 
+    def _select_folder(self, imap_conn, folder: str):
+        """Prefer read-only selection, then fall back to SELECT for Outlook IMAP."""
+        try:
+            return imap_conn.select(folder, readonly=True)
+        except Exception as exc:
+            self.mailbox._log(
+                f"[微软邮箱][IMAP] folder={folder} EXAMINE 失败，改用 SELECT: {exc}"
+            )
+            return imap_conn.select(folder, readonly=False)
+
     def get_current_ids(self, account: MailboxAccount) -> set:
         imap_conn = None
         try:
             imap_conn = self.mailbox._open_imap(account)
             seen: set[str] = set()
             for folder in self.mailbox._imap_folder_names:
-                status, _ = imap_conn.select(folder, readonly=True)
+                try:
+                    status, _ = self._select_folder(imap_conn, folder)
+                except Exception as exc:
+                    self.mailbox._log(
+                        f"[微软邮箱][IMAP] folder={folder} select 失败，跳过: {exc}"
+                    )
+                    continue
                 if status != "OK":
                     continue
                 status, data = imap_conn.uid("search", None, "ALL")
@@ -3155,6 +3171,7 @@ class OutlookImapMailboxBackend(OutlookMailboxBackend):
         **kwargs,
     ) -> str:
         from email import message_from_bytes
+        from email.utils import parsedate_to_datetime
         from email.policy import default as email_default_policy
 
         seen = {str(mid) for mid in (before_ids or set())}
@@ -3163,6 +3180,11 @@ class OutlookImapMailboxBackend(OutlookMailboxBackend):
             for code in (kwargs.get("exclude_codes") or set())
             if str(code or "").strip()
         }
+        otp_sent_at = kwargs.get("otp_sent_at")
+        try:
+            otp_cutoff = float(otp_sent_at) - 2 if otp_sent_at else None
+        except (TypeError, ValueError):
+            otp_cutoff = None
         keyword_lower = str(keyword or "").strip().lower()
 
         def poll_once() -> Optional[str]:
@@ -3172,7 +3194,7 @@ class OutlookImapMailboxBackend(OutlookMailboxBackend):
                     self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} 开始轮询")
                     imap_conn = self.mailbox._open_imap(account)
                     self.mailbox._log(f"[微软邮箱][IMAP] folder={folder} IMAP 登录成功")
-                    status, _ = imap_conn.select(folder, readonly=True)
+                    status, _ = self._select_folder(imap_conn, folder)
                     if status != "OK":
                         self.mailbox._log(
                             f"[微软邮箱][IMAP] folder={folder} select 失败: status={status}"
@@ -3222,6 +3244,18 @@ class OutlookImapMailboxBackend(OutlookMailboxBackend):
                         msg = message_from_bytes(raw, policy=email_default_policy)
                         subject = self.mailbox._decode_header_value(msg.get("Subject", ""))
                         text = self.mailbox._extract_message_text(msg)
+                        if otp_cutoff:
+                            try:
+                                message_ts = parsedate_to_datetime(
+                                    msg.get("Date", "") or ""
+                                ).timestamp()
+                            except (TypeError, ValueError, OverflowError):
+                                message_ts = 0
+                            if message_ts and message_ts < otp_cutoff:
+                                self.mailbox._log(
+                                    f"[微软邮箱][IMAP] folder={folder} 跳过发码前旧邮件: uid={uid_str}"
+                                )
+                                continue
                         self.mailbox._log(
                             f"[微软邮箱][IMAP] folder={folder} 命中新邮件 subject={subject or '-'}"
                         )
@@ -3269,10 +3303,16 @@ class OutlookGraphMailboxBackend(OutlookMailboxBackend):
     backend_name = "graph"
 
     def get_current_ids(self, account: MailboxAccount) -> set:
+        if str((account.extra or {}).get("_oauth_backend_capability") or "").strip().lower() == "imap":
+            self.mailbox._log("[微软邮箱] Graph OAuth scope 不可用，当前 token 仅支持 IMAP，自动切换 IMAP")
+            return self.mailbox._backends["imap"].get_current_ids(account)
         access_token = self.mailbox._get_oauth_access_token(
             account,
             preferred_backend=self.backend_name,
         )
+        if str((account.extra or {}).get("_oauth_backend_capability") or "").strip().lower() != "graph":
+            self.mailbox._log("[微软邮箱] Graph OAuth scope 不可用，当前 token 仅支持 IMAP，自动切换 IMAP")
+            return self.mailbox._backends["imap"].get_current_ids(account)
         seen: set[str] = set()
         for folder in self.mailbox._graph_folder_names:
             try:
@@ -3323,6 +3363,27 @@ class OutlookGraphMailboxBackend(OutlookMailboxBackend):
         code_pattern: str | None = None,
         **kwargs,
     ) -> str:
+        if str((account.extra or {}).get("_oauth_backend_capability") or "").strip().lower() == "imap":
+            self.mailbox._log("[微软邮箱] Graph OAuth scope 不可用，当前 token 仅支持 IMAP，自动切换 IMAP")
+            return self.mailbox._backends["imap"].wait_for_code(
+                account,
+                keyword=keyword,
+                timeout=timeout,
+                before_ids=before_ids,
+                code_pattern=code_pattern,
+                **kwargs,
+            )
+        self.mailbox._get_oauth_access_token(account, preferred_backend=self.backend_name)
+        if str((account.extra or {}).get("_oauth_backend_capability") or "").strip().lower() != "graph":
+            self.mailbox._log("[微软邮箱] Graph OAuth scope 不可用，当前 token 仅支持 IMAP，自动切换 IMAP")
+            return self.mailbox._backends["imap"].wait_for_code(
+                account,
+                keyword=keyword,
+                timeout=timeout,
+                before_ids=before_ids,
+                code_pattern=code_pattern,
+                **kwargs,
+            )
         seen = {str(mid) for mid in (before_ids or set())}
         exclude_codes = {
             str(code).strip()
@@ -3650,9 +3711,9 @@ class OutlookMailbox(BaseMailbox):
         return bool(str(extra.get("mailapi_url") or "").strip())
 
     def _pop_account(self) -> dict:
-        from sqlalchemy import func
+        from sqlalchemy import func, or_
         from sqlmodel import Session, select
-        from core.db import engine, AccountModel, OutlookAccountModel
+        from core.db import engine, AccountModel, OutlookAccountModel, _utcnow
 
         wanted_type = self._pool_account_type
         if wanted_type:
@@ -3667,13 +3728,19 @@ class OutlookMailbox(BaseMailbox):
 
         with OutlookMailbox._pop_lock:
             with Session(engine) as session:
-                # 池子是消费型的，取走即删；但导入时把用过的地址又写回来（比如
-                # 重新导入一份含旧别名的清单）就会拿到已经注册过的邮箱，再去注册
-                # 必然撞 "邮箱已被占用"。这里按 accounts 表兜一道，注册过的直接跳过。
+                # 导入记录永久保留，取号只筛 available 并标记 in_use；同时按
+                # accounts 表兜一道，注册过的地址不再拿来创建新账号。
                 registered = select(func.lower(AccountModel.email))
                 query = (
                     select(OutlookAccountModel)
                     .where(OutlookAccountModel.enabled == True)
+                    .where(
+                        or_(
+                            OutlookAccountModel.status == "available",
+                            OutlookAccountModel.status == None,
+                            OutlookAccountModel.status == "",
+                        )
+                    )
                     .where(func.lower(OutlookAccountModel.email).notin_(registered))
                     .order_by(OutlookAccountModel.id)
                 )
@@ -3685,13 +3752,18 @@ class OutlookMailbox(BaseMailbox):
                     )
                 account = session.exec(query).first()
                 if not account:
-                    enabled_left = select(func.count(OutlookAccountModel.id)).where(
-                        OutlookAccountModel.enabled == True
+                    available_left = select(func.count(OutlookAccountModel.id)).where(
+                        OutlookAccountModel.enabled == True,
+                        or_(
+                            OutlookAccountModel.status == "available",
+                            OutlookAccountModel.status == None,
+                            OutlookAccountModel.status == "",
+                        ),
                     )
-                    total_left = session.exec(enabled_left).one()
+                    total_left = session.exec(available_left).one()
                     if wanted_type:
                         same_type_left = session.exec(
-                            enabled_left.where(
+                            available_left.where(
                                 self._account_type_matches(
                                     OutlookAccountModel.account_type, wanted_type
                                 )
@@ -3725,7 +3797,10 @@ class OutlookMailbox(BaseMailbox):
                     "account_type": getattr(account, "account_type", "microsoft_oauth"),
                     "mailapi_url": getattr(account, "mailapi_url", ""),
                 }
-                session.delete(account)
+                account.status = "in_use"
+                account.last_used = _utcnow()
+                account.updated_at = _utcnow()
+                session.add(account)
                 session.commit()
                 return payload
 
@@ -3770,7 +3845,7 @@ class OutlookMailbox(BaseMailbox):
 
     def requeue_account(self, account: MailboxAccount) -> None:
         from sqlmodel import Session, select
-        from core.db import engine, OutlookAccountModel
+        from core.db import engine, OutlookAccountModel, _utcnow
 
         email = str(getattr(account, "email", "") or "").strip()
         extra = getattr(account, "extra", None) or {}
@@ -3795,6 +3870,7 @@ class OutlookMailbox(BaseMailbox):
                     existing.account_type = account_type
                     existing.mailapi_url = mailapi_url
                     existing.enabled = True
+                    existing.status = "available"
                     existing.updated_at = _utcnow()
                     session.add(existing)
                 else:
@@ -3807,12 +3883,40 @@ class OutlookMailbox(BaseMailbox):
                             account_type=account_type,
                             mailapi_url=mailapi_url,
                             enabled=True,
+                            status="available",
                             created_at=_utcnow(),
                             updated_at=_utcnow(),
                         )
                     )
                 session.commit()
         self._log(f"[微软邮箱] 账号已回退到本地池: {email}")
+
+    def set_account_status(self, account: MailboxAccount, status: str) -> None:
+        """更新已领取邮箱的生命周期状态，保留原始导入记录。"""
+        allowed = {"available", "in_use", "used", "failed"}
+        normalized = str(status or "").strip().lower()
+        if normalized not in allowed:
+            raise ValueError(f"未知邮箱池状态: {status}")
+        from sqlmodel import Session, select
+        from core.db import engine, OutlookAccountModel, _utcnow
+
+        email = str(getattr(account, "email", "") or "").strip()
+        account_id = str(getattr(account, "account_id", "") or "").strip()
+        with self._lock:
+            with Session(engine) as session:
+                row = None
+                if account_id.isdigit():
+                    row = session.get(OutlookAccountModel, int(account_id))
+                if row is None and email:
+                    row = session.exec(
+                        select(OutlookAccountModel).where(OutlookAccountModel.email == email)
+                    ).first()
+                if row is None:
+                    return
+                row.status = normalized
+                row.updated_at = _utcnow()
+                session.add(row)
+                session.commit()
 
     def _token_endpoints(self) -> list[str]:
         if self._token_endpoint:
@@ -4053,6 +4157,10 @@ class OutlookMailbox(BaseMailbox):
             preferred_backend=cache_key,
         )
         access_token = str(bundle.get("access_token") or "").strip()
+        if cache_key == "graph":
+            extra["_oauth_backend_capability"] = (
+                "graph" if bundle.get("scope_label") == "graph_default" else "imap"
+            )
         if not access_token:
             reason = bundle.get("reason", "")
             suffix = f" [{reason}]" if reason else ""
@@ -4123,7 +4231,8 @@ class OutlookMailbox(BaseMailbox):
         raise RuntimeError(f"微软邮箱 IMAP 登录失败: {last_error}")
 
     def _resolve_backend(self, account: MailboxAccount) -> OutlookMailboxBackend:
-        extra = account.extra or {}
+        extra = account.extra if isinstance(account.extra, dict) else {}
+        account.extra = extra
         if self._is_mailapi_account(account):
             return self._backends["mailapi_url"]
         override = self._normalize_backend_name(

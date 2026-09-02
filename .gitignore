@@ -66,6 +66,7 @@ data/
 .docs/superpowers/
 CLAUDE.md
 .ace-tool/
+.codex-review/
 
 # 运行时 / 缓存
 __pycache__/

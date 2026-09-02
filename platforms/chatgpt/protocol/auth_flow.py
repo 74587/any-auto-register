@@ -98,12 +98,22 @@ class AuthFlow(PhoneRegisterMixin):
         self._env_overrides = dict(env_overrides or {})
         self.config = config
         self._country_code = ""  # IP 地理国家码，check_proxy() 时填充
-        self._fingerprint = generate_fingerprint()  # 先生成默认指纹
-        self._ua = self._fingerprint["user_agent"]
-        self._impersonate_candidates = self._fingerprint.get(
-            "fallback_impersonates",
-            [self._fingerprint["impersonate"], "safari17_0", "safari15_5"],
+        # Codex/登录协议固定使用参考项目同款的 Chrome 146 指纹；只有 TLS
+        # 传输异常时才在同一 Chrome 家族内回退到旧版本。
+        preferred_impersonate = (
+            self._get_env("OAUTH_IMPERSONATE", "chrome146").strip() or "chrome146"
         )
+        self._fingerprint = fingerprint_for_impersonate(
+            preferred_impersonate, generate_fingerprint()
+        )
+        self._ua = self._fingerprint["user_agent"]
+        if preferred_impersonate.startswith("chrome"):
+            self._impersonate_candidates = [preferred_impersonate, "chrome142", "chrome136"]
+        else:
+            self._impersonate_candidates = self._fingerprint.get(
+                "fallback_impersonates",
+                [self._fingerprint["impersonate"], "safari17_0", "safari15_5"],
+            )
         self._impersonate_idx = 0
         self.session = create_http_session(
             proxy=config.proxy,
@@ -227,10 +237,7 @@ class AuthFlow(PhoneRegisterMixin):
         for name in critical_names:
             if name in seen:
                 continue
-            try:
-                value = self.session.cookies.get(name, "")
-            except Exception:
-                value = ""
+            value = self._get_cookie_value_by_name(name)
             if value:
                 seen.add(name)
                 cookie_pairs.append((name, value))
@@ -478,17 +485,30 @@ class AuthFlow(PhoneRegisterMixin):
         return "registration_disallowed" in msg
 
     def _get_cookie_value_by_name(self, name: str) -> str:
-        """按 cookie 名称获取值（忽略 domain 冲突）。"""
+        """按名称取 cookie，优先 chatgpt.com，避免跨域同名冲突。"""
         try:
-            jar = getattr(self.session.cookies, "jar", None)
-            if jar is None:
-                return ""
             target = (name or "").strip().lower()
-            for c in jar:
-                if (getattr(c, "name", "") or "").strip().lower() == target:
-                    return (getattr(c, "value", "") or "").strip()
+            cookies = list(self.session.cookies)
+            matches = []
+            for c in cookies:
+                cname = (getattr(c, "name", "") or "").strip().lower()
+                if cname != target:
+                    continue
+                value = (getattr(c, "value", "") or "").strip()
+                domain = (getattr(c, "domain", "") or "").strip().lower()
+                if value:
+                    matches.append((domain, value))
+            for domain, value in matches:
+                if "chatgpt.com" in domain:
+                    return value
+            if matches:
+                return matches[0][1]
         except Exception:
             pass
+        try:
+            return (self.session.cookies.get(name, domain=".chatgpt.com") or "").strip()
+        except Exception:
+            return ""
         return ""
 
     @staticmethod
@@ -784,7 +804,7 @@ class AuthFlow(PhoneRegisterMixin):
             # 猜的密码只拿去碰一下 401，不落进 result（否则会被当成真密码存库/打日志）
             logger.info("Codex 登录推进：该号无已知密码，用默认规则猜一个试试（多半 401）")
 
-        device_id = (self.result.device_id or "").strip() or (self.session.cookies.get("oai-did", "") or "").strip()
+        device_id = (self.result.device_id or "").strip() or self._get_cookie_value_by_name("oai-did")
         if not device_id:
             device_id = str(uuid.uuid4())
             self.result.device_id = device_id
@@ -1811,15 +1831,12 @@ class AuthFlow(PhoneRegisterMixin):
                     device_id = cookie.value
                     break
             elif isinstance(cookie, str) and cookie == "oai-did":
-                device_id = self.session.cookies.get("oai-did", "")
+                device_id = self._get_cookie_value_by_name("oai-did")
                 break
 
         # curl_cffi cookies 访问方式
         if not device_id:
-            try:
-                device_id = self.session.cookies.get("oai-did", "")
-            except Exception:
-                pass
+            device_id = self._get_cookie_value_by_name("oai-did")
 
         # fallback: 从 HTML 提取
         if not device_id:

@@ -29,6 +29,7 @@ class MailImportSnapshotItem(BaseModel):
     email: str
     mailbox: str = ""
     enabled: bool | None = None
+    status: str = "available"
     has_oauth: bool | None = None
     account_type: MailImportAccountType | None = None
 

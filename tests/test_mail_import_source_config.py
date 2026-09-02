@@ -93,3 +93,25 @@ def test_config_without_a_stored_view_falls_back_instead_of_returning_blank(clie
     client.put("/api/config", json={"data": {"mail_provider": "applemail"}})
 
     assert client.get("/api/config").json()["mail_import_source"] == "applemail"
+
+
+def test_payment_proxy_survives_a_reload(client):
+    proxy = "socks5h://user:pass@example.test:1080"
+    response = client.put("/api/config", json={"data": {"payment_proxy": proxy}})
+
+    assert response.status_code == 200
+    assert client.get("/api/config").json()["payment_proxy"] == proxy
+
+
+def test_payment_operation_proxies_survive_a_reload(client):
+    link_proxy = "socks5h://link.example.test:1080"
+    pay_proxy = "socks5h://pay.example.test:1080"
+    response = client.put("/api/config", json={"data": {
+        "payment_link_proxy": link_proxy,
+        "payment_pay_proxy": pay_proxy,
+    }})
+
+    assert response.status_code == 200
+    config = client.get("/api/config").json()
+    assert config["payment_link_proxy"] == link_proxy
+    assert config["payment_pay_proxy"] == pay_proxy

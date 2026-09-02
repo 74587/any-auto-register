@@ -15,7 +15,17 @@ from platforms.chatgpt.registration_engine import (
 
 class _StubMailbox:
     def __init__(self, email="demo@example.com", ids=None, code="123456"):
-        self.account = MailboxAccount(email=email, account_id="stub")
+        self.account = MailboxAccount(
+            email=email,
+            account_id="stub",
+            extra={
+                "provider": "microsoft",
+                "account_type": "microsoft_oauth",
+                "password": "mail-password",
+                "client_id": "mail-client-id",
+                "refresh_token": "mail-refresh-token",
+            },
+        )
         self._ids = ids
         self._code = code
         self.wait_calls = []
@@ -243,6 +253,9 @@ class RegistrationEngineRunTests(unittest.TestCase):
         self.assertEqual(result.session_token, "st")
         self.assertEqual(result.cookie_header, "c=1")
         self.assertEqual(result.metadata["device_id"], "dev-1")
+        self.assertEqual(result.metadata["mail_provider"], "microsoft")
+        self.assertEqual(result.metadata["client_id"], "mail-client-id")
+        self.assertEqual(result.metadata["refresh_token"], "mail-refresh-token")
         # 协议层拿到的是适配后的邮箱 provider，而不是裸 mailbox
         provider = flow.run_register.call_args.args[0]
         self.assertIsInstance(provider, MailboxProviderAdapter)

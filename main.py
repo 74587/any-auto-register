@@ -23,6 +23,7 @@ from api.contribution import router as contribution_router
 from api.icloud import router as icloud_router
 from api.shared_mail import router as shared_mail_router
 from api.sms import router as sms_router
+from api.payments import router as payments_router
 
 EXPECTED_CONDA_ENV = os.getenv("APP_CONDA_ENV", "any-auto-register")
 
@@ -125,6 +126,7 @@ app.include_router(outlook_router, prefix="/api")
 app.include_router(contribution_router, prefix="/api")
 app.include_router(icloud_router, prefix="/api")
 app.include_router(sms_router, prefix="/api")
+app.include_router(payments_router, prefix="/api")
 # 隐私邮箱的免登录邮件页，不带 /api 前缀就绕开了鉴权中间件
 app.include_router(shared_mail_router)
 

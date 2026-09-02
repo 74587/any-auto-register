@@ -400,6 +400,7 @@ class MicrosoftMailImportStrategy(BaseMailImportStrategy):
                 index=idx,
                 email=account.email,
                 enabled=bool(account.enabled),
+                status=str(getattr(account, "status", "available") or "available"),
                 has_oauth=bool(
                     str(getattr(account, "account_type", ACCOUNT_TYPE_MICROSOFT_OAUTH) or ACCOUNT_TYPE_MICROSOFT_OAUTH)
                     == ACCOUNT_TYPE_MICROSOFT_OAUTH
@@ -547,6 +548,7 @@ class MicrosoftMailImportStrategy(BaseMailImportStrategy):
                         account_type=str(record.account_type or ACCOUNT_TYPE_MICROSOFT_OAUTH),
                         mailapi_url=str(record.mailapi_url or ""),
                         enabled=bool(request.enabled),
+                        status="available",
                         created_at=_utcnow(),
                         updated_at=_utcnow(),
                     )

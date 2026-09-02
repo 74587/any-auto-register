@@ -267,6 +267,25 @@ class RegisterTaskStore:
             record.logs.append(entry)
             record.updated_at = time.time()
 
+    def update_meta(self, task_id: str, patch: dict[str, Any]) -> None:
+        with self._lock:
+            record = self._records.get(task_id)
+            if record is None:
+                return
+            record.meta.update(patch)
+            record.updated_at = time.time()
+
+    def append_meta_list(self, task_id: str, key: str, value: Any) -> None:
+        with self._lock:
+            record = self._records.get(task_id)
+            if record is None:
+                return
+            current = record.meta.get(key)
+            values = list(current) if isinstance(current, list) else []
+            values.append(value)
+            record.meta[key] = values
+            record.updated_at = time.time()
+
     def mark_running(self, task_id: str) -> None:
         with self._lock:
             record = self._records[task_id]
